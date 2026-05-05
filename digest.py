@@ -225,9 +225,10 @@ def score(art: dict) -> dict | None:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300}}
+    time.sleep(0.3)  # rate-limit: tránh spam API từ nhiều worker cùng lúc
     for attempt in range(3):
         try:
-            r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=25)
+            r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=20)
             if r.status_code == 429:
                 time.sleep(15 * (attempt + 1))
                 continue
@@ -354,7 +355,7 @@ def main():
     with ThreadPoolExecutor(max_workers=12) as ex:
         futs2 = []
         for src, urls in sources.items():
-            for u in urls[:25]:
+            for u in urls[:15]:
                 futs2.append(ex.submit(process, src, u))
         for f in as_completed(futs2):
             try:
@@ -363,6 +364,7 @@ def main():
             except Exception:
                 pass
     print(f"  Tier2: {len(tier2)} bài qua filter ({time.time()-t0:.1f}s)")
+    tier2 = tier2[:60]  # cap để Tier3 không bị quá tải
 
     if not tier2:
         send_telegram("⚠️ Hôm nay không có bài nào qua filter.")
@@ -381,7 +383,6 @@ def main():
                     scored.append(art)
             except Exception:
                 pass
-            time.sleep(0.5)
     print(f"  Tier3: {len(scored)} bài scored ({time.time()-t0:.1f}s)")
 
     # Dedup cross-source
