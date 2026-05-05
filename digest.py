@@ -17,7 +17,7 @@ import requests
 
 # ─── Config (đọc từ env / GitHub Secrets) ────────────────────────────────────
 GEMINI_KEY   = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 BOT_TOKEN    = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID      = os.environ["TELEGRAM_CHAT_ID"]
 MIN_SCORE    = int(os.getenv("MIN_SCORE", "7"))
