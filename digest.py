@@ -120,68 +120,60 @@ def collect_vneconomy() -> list[str]:
 
 
 def collect_cafef() -> list[str]:
+    html = fetch("https://cafef.vn/")
+    if not html: return []
     out: set[str] = set()
-    for cat in ["vi-mo-dau-tu","doanh-nghiep","thi-truong-chung-khoan","tai-chinh-quoc-te","tai-chinh-ngan-hang"]:
-        html = fetch(f"https://cafef.vn/{cat}.chn")
-        if not html: continue
-        for u in re.findall(r'href="(/[^"]*-\d{8,}\.chn)"', html):
-            out.add("https://cafef.vn" + u)
+    for u in re.findall(r'href="(/[^"]*-\d{8,}\.chn)"', html):
+        out.add("https://cafef.vn" + u)
     SKIP = ["xon-xao","la-lung","ky-la","gay-soc","soc-","-nho-duoc","khien","phat-hien","tu-vong"]
     return [u for u in out if not any(k in u for k in SKIP)]
 
 
 def collect_sgt() -> list[str]:
+    html = fetch("https://thesaigontimes.vn/")
+    if not html: return []
     out: set[str] = set()
-    for cat in ["kinh-doanh","dia-oc","lang-kinh","the-gioi","doanh-nhan-doanh-nghiep"]:
-        html = fetch(f"https://thesaigontimes.vn/{cat}/")
-        if not html: continue
-        for u in re.findall(r'href="(https://thesaigontimes\.vn/[a-z0-9\-]+/)"', html):
-            if "/category/" in u or u.endswith(f"/{cat}/"): continue
-            if len(u.rstrip("/").split("/")[-1].split("-")) < 5: continue
-            out.add(u)
+    for u in re.findall(r'href="(https://thesaigontimes\.vn/[a-z0-9\-]+/)"', html):
+        if "/category/" in u: continue
+        if len(u.rstrip("/").split("/")[-1].split("-")) < 5: continue
+        out.add(u)
     return list(out)
 
 
 def collect_ncdt() -> list[str]:
+    html = fetch("https://nhipcaudautu.vn/")
+    if not html: return []
     out: set[str] = set()
-    for cat in ["","kinh-doanh","tai-chinh","dau-tu","vi-mo"]:
-        url = f"https://nhipcaudautu.vn/{cat}/" if cat else "https://nhipcaudautu.vn/"
-        html = fetch(url)
-        if not html: continue
-        for u in re.findall(r'href="(https://nhipcaudautu\.vn/[^"]+\.html?)"', html):
-            if not any(s in u for s in ["/tag/","/category/","/author/"]):
-                out.add(u)
-        for u in re.findall(r'href="(/[^"]+\.html?)"', html):
-            if not any(s in u for s in ["/tag/","/category/","/author/"]):
-                out.add("https://nhipcaudautu.vn" + u)
+    for u in re.findall(r'href="(https://nhipcaudautu\.vn/[^"]+\.html?)"', html):
+        if not any(s in u for s in ["/tag/","/category/","/author/"]):
+            out.add(u)
+    for u in re.findall(r'href="(/[^"]+\.html?)"', html):
+        if not any(s in u for s in ["/tag/","/category/","/author/"]):
+            out.add("https://nhipcaudautu.vn" + u)
     return list(out)
 
 
 def collect_bdt() -> list[str]:
+    html = fetch("https://baodautu.vn/")
+    if not html: return []
     out: set[str] = set()
-    for cat in ["","tai-chinh-ngan-hang","dau-tu","kinh-doanh","bat-dong-san","chung-khoan","quoc-te"]:
-        url = f"https://baodautu.vn/{cat}/" if cat else "https://baodautu.vn/"
-        html = fetch(url)
-        if not html: continue
-        for u in re.findall(r'href="(https://baodautu\.vn/[^"]+\.html?)"', html):
-            if not any(s in u for s in ["/tag/","/category/","/page/"]):
-                out.add(u)
-        for u in re.findall(r'href="(/[a-z][^"]*\.html?)"', html):
-            if not any(s in u for s in ["/tag/","/category/","/page/"]):
-                out.add("https://baodautu.vn" + u)
+    for u in re.findall(r'href="(https://baodautu\.vn/[^"]+\.html?)"', html):
+        if not any(s in u for s in ["/tag/","/category/","/page/"]):
+            out.add(u)
+    for u in re.findall(r'href="(/[a-z][^"]*\.html?)"', html):
+        if not any(s in u for s in ["/tag/","/category/","/page/"]):
+            out.add("https://baodautu.vn" + u)
     return list(out)
 
 
 def collect_bbw() -> list[str]:
+    html = fetch("https://bbw.vn/")
+    if not html: return []
     out: set[str] = set()
-    for page in ["https://bbw.vn/","https://bbw.vn/kinh-doanh","https://bbw.vn/tai-chinh",
-                 "https://bbw.vn/the-gioi","https://bbw.vn/cong-nghe","https://bbw.vn/chung-khoan"]:
-        html = fetch(page)
-        if not html: continue
-        for u in re.findall(r'href="(https://bbw\.vn/[a-z0-9][a-z0-9\-]+-\d+\.html)"', html):
-            out.add(u)
-        for u in re.findall(r'href="(/[a-z0-9][a-z0-9\-]+-\d+\.html)"', html):
-            out.add("https://bbw.vn" + u)
+    for u in re.findall(r'href="(https://bbw\.vn/[a-z0-9][a-z0-9\-]+-\d+\.html)"', html):
+        out.add(u)
+    for u in re.findall(r'href="(/[a-z0-9][a-z0-9\-]+-\d+\.html)"', html):
+        out.add("https://bbw.vn" + u)
     return list(out)
 
 
