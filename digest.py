@@ -268,33 +268,54 @@ Dưới đây là nội dung {len(articles)} bài báo chất lượng cao ngày
 
 {articles_text}
 
-Viết BẢN TIN chi tiết. Yêu cầu:
-- Mỗi tin: 4-6 câu, trích dẫn số liệu/tên chuyên gia/dữ kiện cụ thể từ bài báo
-- Dùng **bold** (dấu sao kép) cho tiêu đề mỗi tin.
-- BẮT BUỘC in đậm bằng **...** TẤT CẢ các con số quan trọng trong nội dung tin:
-  * Phần trăm: **38,2%**, **+15,7%**, **-2,3%**
-  * Tăng trưởng YoY/QoQ: **YoY +12%**, **so cùng kỳ +38,2%**
-  * Số tiền: **2.500 tỷ đồng**, **150 triệu USD**, **8,38%/năm** (lãi suất)
-  * Doanh thu, lợi nhuận, vốn hóa, EPS, P/E, ROE, NIM
-  * Điểm số chỉ số (VN-Index, VN30...)
-- Sau MỖI tin, kết thúc bằng dòng riêng: [đọc thêm]({{URL_BÀI}})  ← thay {{URL_BÀI}} bằng URL thật của bài đó (ghi ở mục URL phía trên).
-- Không bỏ sót bài nào.
+Viết BẢN TIN chi tiết theo CHÍNH XÁC định dạng dưới đây.
 
-Cấu trúc:
+QUY TẮC ĐỊNH DẠNG (BẮT BUỘC TUÂN THỦ):
+1. CHỈ dùng **dấu sao đôi** để in đậm (KHÔNG dùng dấu sao đơn).
+2. KHÔNG dùng dấu * làm bullet. Dùng dấu gạch ngang "- " hoặc số thứ tự "1. ".
+3. In đậm BẰNG ** TẤT CẢ con số/dữ liệu định lượng:
+   - Phần trăm: **38,2%**, **+15,7%**, **-2,3%**, **YoY +12%**
+   - Số tiền/quy mô: **2.500 tỷ đồng**, **150 triệu USD**
+   - Lãi suất: **8,38%/năm**
+   - Chỉ số: **VN-Index 1.250 điểm**, **VN30**, **NIM 3,2%**, **ROE 18%**
+   - Mọi số liệu khác có ý nghĩa thị trường
+4. Tiêu đề mỗi tin: dùng **...** in đậm.
+5. Sau MỖI tin (dưới đoạn nội dung), thêm DÒNG RIÊNG: [đọc thêm](URL_THẬT_CỦA_BÀI)
+   — copy URL từ mục "URL:" của bài đó. KHÔNG để placeholder, KHÔNG bỏ qua.
+6. Mỗi tin 4-6 câu, trích số liệu/tên chuyên gia/dữ kiện cụ thể.
+7. Không bỏ sót bài nào.
 
+CẤU TRÚC OUTPUT:
+
+═══════════════════════════════════
 📊 **BẢN TIN THỊ TRƯỜNG — {today}**
+═══════════════════════════════════
 
-━━━ 🇻🇳 KINH TẾ VIỆT NAM ━━━
-[Từng bài VN - tiêu đề in đậm + 4-6 câu (số liệu in đậm) + dòng [đọc thêm](url)]
+━━━━━━━ 🇻🇳 **KINH TẾ VIỆT NAM** ━━━━━━━
 
-━━━ 🌍 VĨ MÔ THẾ GIỚI ━━━
-[Từng bài thế giới - format tương tự]
+**[Tiêu đề bài 1]**
+[4-6 câu nội dung, BOLD mọi số liệu]
+[đọc thêm](URL_BÀI_1)
 
-━━━ ⚠️ RỦI RO CẦN THEO DÕI ━━━
-[3 điểm rủi ro có số liệu in đậm cụ thể]
+**[Tiêu đề bài 2]**
+[...]
+[đọc thêm](URL_BÀI_2)
 
-━━━ 💡 GỢI Ý NGÀNH/CỔ PHIẾU ━━━
-[Cụ thể, có lý do rõ ràng từ tin trên]"""
+━━━━━━━ 🌍 **VĨ MÔ THẾ GIỚI** ━━━━━━━
+
+[Format tương tự nếu có bài quốc tế]
+
+━━━━━━━ ⚠️ **RỦI RO CẦN THEO DÕI** ━━━━━━━
+
+1. **[Tiêu đề rủi ro 1]:** [Mô tả có số liệu BOLD]
+2. **[Tiêu đề rủi ro 2]:** [Mô tả có số liệu BOLD]
+3. **[Tiêu đề rủi ro 3]:** [Mô tả có số liệu BOLD]
+
+━━━━━━━ 💡 **GỢI Ý NGÀNH/CỔ PHIẾU** ━━━━━━━
+
+- **[Tên ngành/cổ phiếu]:** [Lý do cụ thể từ tin trên, có số liệu BOLD]
+- **[Tên ngành/cổ phiếu]:** [...]
+- **[Tên ngành/cổ phiếu]:** [...]"""
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}],
@@ -305,9 +326,38 @@ Cấu trúc:
 
 
 # ─── Send Telegram ────────────────────────────────────────────────────────────
+def md_to_html(text: str) -> str:
+    """Chuyển Markdown từ Gemini sang HTML cho Telegram (parse_mode=HTML)
+    — bền hơn Markdown vì không bị break bởi dấu * lẻ trong bullet."""
+    # 1. Escape ký tự HTML đặc biệt trước khi insert tag
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # 2. Link [text](url) → <a href="url">text</a>
+    text = re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>',
+        text,
+    )
+
+    # 3. **bold** → <b>bold</b>  (cho phép xuống dòng trong bold)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+
+    # 4. *bold* (single-star) → <b>bold</b>  (chỉ khi không phải bullet đầu dòng)
+    text = re.sub(
+        r"(?<![*\w])\*([^*\n][^*\n]*?)\*(?![*\w])",
+        r"<b>\1</b>",
+        text,
+    )
+
+    # 5. Bullet `*   ` đầu dòng → `•  ` để tránh nhầm với bold
+    text = re.sub(r"^[ \t]*\*[ \t]+", "•  ", text, flags=re.MULTILINE)
+
+    return text
+
+
 def send_telegram(text: str) -> None:
     MAX = 4000
-    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+    text = md_to_html(text)
     parts = []
     while len(text) > MAX:
         split_at = text.rfind("\n\n", 0, MAX)
@@ -318,13 +368,18 @@ def send_telegram(text: str) -> None:
     for part in parts:
         r = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": part, "parse_mode": "Markdown"},
+            json={"chat_id": CHAT_ID, "text": part, "parse_mode": "HTML",
+                  "disable_web_page_preview": True},
             timeout=15,
         )
         if not r.json().get("ok"):
+            print(f"  ⚠️  Telegram HTML lỗi: {r.json().get('description')}")
+            # Fallback: gỡ tag, gửi plain text
+            plain = re.sub(r"<[^>]+>", "", part)
+            plain = plain.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": CHAT_ID, "text": part},
+                json={"chat_id": CHAT_ID, "text": plain, "disable_web_page_preview": True},
                 timeout=15,
             )
 
