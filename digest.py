@@ -287,11 +287,9 @@ QUY TẮC ĐỊNH DẠNG (BẮT BUỘC TUÂN THỦ):
 
 CẤU TRÚC OUTPUT:
 
-═══════════════════════════════════
 📊 **BẢN TIN THỊ TRƯỜNG — {today}**
-═══════════════════════════════════
 
-━━━━━━━ 🇻🇳 **KINH TẾ VIỆT NAM** ━━━━━━━
+🇻🇳 **KINH TẾ VIỆT NAM**
 
 **[Tiêu đề bài 1]**
 [4-6 câu nội dung, BOLD mọi số liệu]
@@ -301,17 +299,17 @@ CẤU TRÚC OUTPUT:
 [...]
 [đọc thêm](URL_BÀI_2)
 
-━━━━━━━ 🌍 **VĨ MÔ THẾ GIỚI** ━━━━━━━
+🌍 **VĨ MÔ THẾ GIỚI**
 
 [Format tương tự nếu có bài quốc tế]
 
-━━━━━━━ ⚠️ **RỦI RO CẦN THEO DÕI** ━━━━━━━
+⚠️ **RỦI RO CẦN THEO DÕI**
 
 1. **[Tiêu đề rủi ro 1]:** [Mô tả có số liệu BOLD]
 2. **[Tiêu đề rủi ro 2]:** [Mô tả có số liệu BOLD]
 3. **[Tiêu đề rủi ro 3]:** [Mô tả có số liệu BOLD]
 
-━━━━━━━ 💡 **GỢI Ý NGÀNH/CỔ PHIẾU** ━━━━━━━
+💡 **GỢI Ý NGÀNH/CỔ PHIẾU**
 
 - **[Tên ngành/cổ phiếu]:** [Lý do cụ thể từ tin trên, có số liệu BOLD]
 - **[Tên ngành/cổ phiếu]:** [...]
