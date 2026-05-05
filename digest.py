@@ -17,7 +17,7 @@ import requests
 
 # ─── Config (đọc từ env / GitHub Secrets) ────────────────────────────────────
 GEMINI_KEY   = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 BOT_TOKEN    = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID      = os.environ["TELEGRAM_CHAT_ID"]
 MIN_SCORE    = int(os.getenv("MIN_SCORE", "7"))
@@ -26,7 +26,7 @@ HDR = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "vi,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",
 }
 
 # ─── HTML fetch + parse ───────────────────────────────────────────────────────
@@ -144,12 +144,14 @@ def collect_ncdt() -> list[str]:
     html = fetch("https://nhipcaudautu.vn/")
     if not html: return []
     out: set[str] = set()
-    for u in re.findall(r'href="(https://nhipcaudautu\.vn/[^"]+\.html?)"', html):
-        if not any(s in u for s in ["/tag/","/category/","/author/"]):
-            out.add(u)
-    for u in re.findall(r'href="(/[^"]+\.html?)"', html):
-        if not any(s in u for s in ["/tag/","/category/","/author/"]):
+    # URL bài mới có dạng: /<category>/<slug>-<id>/  (id 6+ chữ số)
+    for u in re.findall(r'href="(/[a-z][a-z0-9\-]+/[a-z0-9\-]+-\d{6,}/?)"', html):
+        if not any(s in u for s in ["/tag/", "/category/", "/author/"]):
             out.add("https://nhipcaudautu.vn" + u)
+    # Pattern cũ phòng khi vẫn còn .html
+    for u in re.findall(r'href="(https://nhipcaudautu\.vn/[^"]+\.html?)"', html):
+        if not any(s in u for s in ["/tag/", "/category/", "/author/"]):
+            out.add(u)
     return list(out)
 
 
