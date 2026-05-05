@@ -258,6 +258,7 @@ def build_digest(articles: list[dict]) -> str:
         articles_text += (
             f"--- BÀI {i} ---\n"
             f"Tiêu đề: {a['title']}\n"
+            f"URL: {a['url']}\n"
             f"Nguồn: {a['source']} | Chủ đề: {a['score']['topic']} | Mood: {a['score']['mood']}\n"
             f"Nội dung: {content}\n\n"
         )
@@ -267,22 +268,30 @@ Dưới đây là nội dung {len(articles)} bài báo chất lượng cao ngày
 
 {articles_text}
 
-Viết BẢN TIN BUỔI SÁNG chi tiết. Yêu cầu:
+Viết BẢN TIN chi tiết. Yêu cầu:
 - Mỗi tin: 4-6 câu, trích dẫn số liệu/tên chuyên gia/dữ kiện cụ thể từ bài báo
-- Không bỏ sót bài nào. Dùng **bold** cho tiêu đề mỗi tin.
+- Dùng **bold** (dấu sao kép) cho tiêu đề mỗi tin.
+- BẮT BUỘC in đậm bằng **...** TẤT CẢ các con số quan trọng trong nội dung tin:
+  * Phần trăm: **38,2%**, **+15,7%**, **-2,3%**
+  * Tăng trưởng YoY/QoQ: **YoY +12%**, **so cùng kỳ +38,2%**
+  * Số tiền: **2.500 tỷ đồng**, **150 triệu USD**, **8,38%/năm** (lãi suất)
+  * Doanh thu, lợi nhuận, vốn hóa, EPS, P/E, ROE, NIM
+  * Điểm số chỉ số (VN-Index, VN30...)
+- Sau MỖI tin, kết thúc bằng dòng riêng: [đọc thêm]({{URL_BÀI}})  ← thay {{URL_BÀI}} bằng URL thật của bài đó (ghi ở mục URL phía trên).
+- Không bỏ sót bài nào.
 
 Cấu trúc:
 
 📊 **BẢN TIN THỊ TRƯỜNG — {today}**
 
 ━━━ 🇻🇳 KINH TẾ VIỆT NAM ━━━
-[Từng bài VN - tiêu đề in đậm + 4-6 câu]
+[Từng bài VN - tiêu đề in đậm + 4-6 câu (số liệu in đậm) + dòng [đọc thêm](url)]
 
 ━━━ 🌍 VĨ MÔ THẾ GIỚI ━━━
-[Từng bài thế giới - tiêu đề in đậm + 4-6 câu]
+[Từng bài thế giới - format tương tự]
 
 ━━━ ⚠️ RỦI RO CẦN THEO DÕI ━━━
-[3 điểm rủi ro có số liệu cụ thể]
+[3 điểm rủi ro có số liệu in đậm cụ thể]
 
 ━━━ 💡 GỢI Ý NGÀNH/CỔ PHIẾU ━━━
 [Cụ thể, có lý do rõ ràng từ tin trên]"""
@@ -320,10 +329,33 @@ def send_telegram(text: str) -> None:
             )
 
 
+# ─── Dedup giữa các lần chạy ──────────────────────────────────────────────────
+SENT_FILE = "sent_urls.json"
+SENT_RETAIN_DAYS = 3  # nhớ URL đã gửi trong 3 ngày
+
+
+def load_sent() -> dict:
+    """Đọc danh sách URL đã gửi, tự loại bỏ entry quá cũ."""
+    try:
+        with open(SENT_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    cutoff = time.time() - SENT_RETAIN_DAYS * 86400
+    return {u: ts for u, ts in data.items() if isinstance(ts, (int, float)) and ts >= cutoff}
+
+
+def save_sent(sent: dict) -> None:
+    with open(SENT_FILE, "w", encoding="utf-8") as f:
+        json.dump(sent, f, ensure_ascii=False, indent=2)
+
+
 # ─── Main pipeline ────────────────────────────────────────────────────────────
 def main():
     t0 = time.time()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Bắt đầu pipeline...")
+    sent = load_sent()
+    print(f"  Đã có {len(sent)} URL trong lịch sử (3 ngày gần nhất)")
 
     # Tier 1: Thu thập URL song song
     collectors = {
@@ -342,9 +374,13 @@ def main():
             try: sources[name] = f.result()
             except Exception: sources[name] = []
     total_urls = sum(len(v) for v in sources.values())
-    print(f"  Tier1: {total_urls} URLs ({time.time()-t0:.1f}s)")
+    # Loại bỏ URL đã gửi ở các lần chạy gần đây
+    for src in sources:
+        sources[src] = [u for u in sources[src] if u not in sent]
+    after_dedup = sum(len(v) for v in sources.values())
+    print(f"  Tier1: {total_urls} URLs ({after_dedup} sau khi loại trùng) ({time.time()-t0:.1f}s)")
 
-    # Tier 2: Fetch + filter (tối đa 25 bài/nguồn)
+    # Tier 2: Fetch + filter (tối đa 15 bài/nguồn)
     tier2: list[dict] = []
     with ThreadPoolExecutor(max_workers=12) as ex:
         futs2 = []
@@ -404,6 +440,13 @@ def main():
     print(f"  Đang tạo bản tin từ {len(top)} bài...")
     digest = build_digest(top)
     send_telegram(digest)
+
+    # Cập nhật danh sách URL đã gửi
+    now = time.time()
+    for a in top:
+        sent[a["url"]] = now
+    save_sent(sent)
+    print(f"  💾 Đã lưu {len(top)} URL vào {SENT_FILE} (tổng: {len(sent)} URL)")
     print(f"  ✅ Gửi Telegram xong! Tổng: {time.time()-t0:.1f}s")
 
 

@@ -7,6 +7,9 @@ on:
     - cron: '0 13 * * *'  # 20:00 tối giờ Việt Nam (UTC+7 → UTC 13:00)
   workflow_dispatch:        # cho phép chạy thủ công từ GitHub UI
 
+permissions:
+  contents: write   # cần để commit lại sent_urls.json sau mỗi lần chạy
+
 jobs:
   send-digest:
     runs-on: ubuntu-latest
@@ -32,3 +35,13 @@ jobs:
           GEMINI_MODEL:        gemini-3.1-flash-lite-preview
           MIN_SCORE:           "7"
         run: python digest.py
+
+      - name: Commit sent_urls.json
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main || true
+          git add sent_urls.json || true
+          git diff --staged --quiet || git commit -m "chore: update sent_urls [skip ci]"
+          git push || true
