@@ -464,14 +464,14 @@ def send_email(markdown_text: str, thread_id: str) -> None:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body      {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                 font-size: 16px; background: #f5f5f5; margin: 0; padding: 20px; color: #1a1a1a; }}
+                 font-size: 15px; background: #f5f5f5; margin: 0; padding: 20px; color: #1a1a1a; }}
     .card     {{ background: #fff; border-radius: 12px; max-width: 680px;
                  margin: 0 auto; padding: 32px 36px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }}
     .timestamp{{ font-size: 14px; color: #888; margin-bottom: 20px; }}
     b         {{ color: #111; }}
     a         {{ color: #1a73e8; text-decoration: none; font-weight: 500; }}
     a:hover   {{ text-decoration: underline; }}
-    p         {{ font-size: 16px; line-height: 1.8; margin: 10px 0; }}
+    p         {{ font-size: 15px; line-height: 1.8; margin: 10px 0; }}
     .footer   {{ font-size: 13px; color: #bbb; margin-top: 28px; text-align: center; }}
   </style>
 </head>
