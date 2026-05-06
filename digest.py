@@ -484,10 +484,13 @@ def send_email(markdown_text: str, thread_id: str) -> None:
 </body>
 </html>"""
 
+        # Hỗ trợ nhiều email: EMAIL_RECIPIENT có thể là "a@gmail.com,b@gmail.com,..."
+        recipients = [e.strip() for e in EMAIL_RECIPIENT.split(",") if e.strip()]
+
         msg = MIMEMultipart("alternative")
         msg["Subject"]    = subject
         msg["From"]       = f"Tin tức hàng ngày <{EMAIL_SENDER}>"
-        msg["To"]         = EMAIL_RECIPIENT
+        msg["To"]         = ", ".join(recipients)
         msg["Message-ID"] = this_msg_id
         # Gom vào 1 thread bằng cách reference về message gốc
         msg["In-Reply-To"] = thread_id
@@ -496,8 +499,8 @@ def send_email(markdown_text: str, thread_id: str) -> None:
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            smtp.sendmail(EMAIL_SENDER, EMAIL_RECIPIENT, msg.as_string())
-        print(f"  ✅ Đã gửi email → {EMAIL_RECIPIENT} (thread: {thread_id[:40]}...)")
+            smtp.sendmail(EMAIL_SENDER, recipients, msg.as_string())
+        print(f"  ✅ Đã gửi email → {len(recipients)} địa chỉ: {', '.join(recipients)}")
     except Exception as e:
         print(f"  ⚠️  Gửi email thất bại: {e}")
 
