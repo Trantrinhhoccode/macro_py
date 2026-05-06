@@ -486,7 +486,7 @@ def send_email(markdown_text: str, thread_id: str) -> None:
 
         msg = MIMEMultipart("alternative")
         msg["Subject"]    = subject
-        msg["From"]       = f"TApro Digest <{EMAIL_SENDER}>"
+        msg["From"]       = f"Tin tức hàng ngày <{EMAIL_SENDER}>"
         msg["To"]         = EMAIL_RECIPIENT
         msg["Message-ID"] = this_msg_id
         # Gom vào 1 thread bằng cách reference về message gốc
