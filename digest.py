@@ -8,6 +8,7 @@ import json
 import os
 import re
 import smtplib
+import threading
 import time
 import urllib.request
 import uuid
@@ -18,6 +19,20 @@ from email.mime.text import MIMEText
 from html.parser import HTMLParser
 
 import requests
+
+# ─── Global Gemini rate limiter (15 RPM = 1 req / 4s) ────────────────────────
+_GEMINI_LOCK      = threading.Lock()
+_GEMINI_LAST_CALL = 0.0
+_GEMINI_MIN_GAP   = 4.1   # giây giữa 2 lần gọi API (4.1s ≈ 14.6 RPM, safe dưới 15)
+
+def _gemini_wait():
+    """Chờ đủ khoảng cách tối thiểu giữa các lần gọi Gemini (global, thread-safe)."""
+    global _GEMINI_LAST_CALL
+    with _GEMINI_LOCK:
+        gap = time.time() - _GEMINI_LAST_CALL
+        if gap < _GEMINI_MIN_GAP:
+            time.sleep(_GEMINI_MIN_GAP - gap)
+        _GEMINI_LAST_CALL = time.time()
 
 # ─── Config (đọc từ env / GitHub Secrets) ────────────────────────────────────
 GEMINI_KEY   = os.environ["GEMINI_API_KEY"]
@@ -226,12 +241,12 @@ def score(art: dict) -> dict | None:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300}}
-    time.sleep(2.0)  # rate-limit: 2s/worker × 2 workers ≈ 1 req/s, tránh 429
     for attempt in range(3):
         try:
+            _gemini_wait()   # global rate limiter: tối đa 1 req/4.1s
             r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=20)
             if r.status_code == 429:
-                time.sleep(15 * (attempt + 1))
+                time.sleep(20 * (attempt + 1))   # 20s, 40s, 60s
                 continue
             r.raise_for_status()
             text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -329,18 +344,19 @@ CẤU TRÚC OUTPUT:
     payload = {"contents": [{"parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4000}}
 
-    # Retry với backoff khi bị 429 (rate-limit sau nhiều lần gọi ở Tier 3)
-    for attempt in range(5):
+    # Dùng global rate limiter — đảm bảo không gọi quá 15 RPM
+    for attempt in range(3):
+        _gemini_wait()
         r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=90)
         if r.status_code == 429:
-            wait = 30 * (attempt + 1)   # 30s, 60s, 90s, 120s, 150s
-            print(f"  build_digest 429 — chờ {wait}s (lần {attempt+1}/5)...")
+            wait = 30 * (attempt + 1)
+            print(f"  build_digest 429 — chờ {wait}s (lần {attempt+1}/3)...")
             time.sleep(wait)
             continue
         r.raise_for_status()
         break
     else:
-        raise RuntimeError("build_digest: vẫn bị 429 sau 5 lần thử")
+        raise RuntimeError("build_digest: vẫn bị 429 sau 3 lần thử")
 
     text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -602,10 +618,6 @@ def main():
     if not top:
         send_telegram(f"⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE} điểm.")
         return
-
-    # Cooldown 20s để API rate-limit hồi phục sau Tier 3
-    print("  Chờ 20s để API rate-limit hồi phục trước build_digest...")
-    time.sleep(20)
 
     # Tạo digest chính từ Gemini
     print(f"  Đang tạo bản tin từ {len(top)} bài...")
