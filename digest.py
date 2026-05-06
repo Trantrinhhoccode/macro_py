@@ -111,7 +111,7 @@ def parse(url: str, html: str) -> dict:
         "title": p.title or "",
         "description": p.description or "",
         "word_count": len(body.split()),
-        "content_first_500": body[:500],
+        "content_first_500": body[:5000],
         "has_numbers": bool(re.search(
             r"\d+([.,]\d+)?\s*(%|tỷ|triệu|nghìn|USD|VNĐ|VND|đồng|điểm|tấn|km)", body, re.I
         )),
