@@ -623,7 +623,7 @@ def main():
     print(f"  Đang tạo bản tin từ {len(top)} bài...")
     digest = build_digest(top)
 
-    # Gắn thêm phần Tin tham khảo (dùng summary có sẵn từ Tier 3, không gọi Gemini thêm)
+    # Gắn thêm phần Tin tham khảo — chèn TRƯỚC phần Rủi ro & Gợi ý
     if refs:
         ref_lines = ["\n\n📎 **TIN THAM KHẢO**\n"]
         for a in refs:
@@ -633,7 +633,20 @@ def main():
                 f"  {summary}\n"
                 f"  [đọc thêm]({a['url']})\n"
             )
-        digest += "\n".join(ref_lines)
+        ref_block = "\n".join(ref_lines)
+
+        # Tìm vị trí phần ⚠️ RỦI RO để chèn refs trước nó
+        split_marker = None
+        for marker in ["⚠️", "⚠"]:
+            idx = digest.find(marker)
+            if idx != -1:
+                split_marker = idx
+                break
+
+        if split_marker is not None:
+            digest = digest[:split_marker].rstrip() + ref_block + "\n\n" + digest[split_marker:]
+        else:
+            digest += ref_block  # fallback: nếu không tìm thấy thì append cuối
 
     # Gửi song song Telegram + Email (email dùng thread_id để gom 1 thread)
     with ThreadPoolExecutor(max_workers=2) as ex:
