@@ -226,7 +226,7 @@ def score(art: dict) -> dict | None:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300}}
-    time.sleep(0.3)  # rate-limit: tránh spam API từ nhiều worker cùng lúc
+    time.sleep(2.0)  # rate-limit: 2s/worker × 2 workers ≈ 1 req/s, tránh 429
     for attempt in range(3):
         try:
             r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=20)
@@ -560,15 +560,15 @@ def main():
             except Exception:
                 pass
     print(f"  Tier2: {len(tier2)} bài qua filter ({time.time()-t0:.1f}s)")
-    tier2 = tier2[:60]  # cap để Tier3 không bị quá tải
+    tier2 = tier2[:30]  # cap 30 bài để Tier3 không bị 429 liên tục
 
     if not tier2:
         send_telegram("⚠️ Hôm nay không có bài nào qua filter.")
         return
 
-    # Tier 3: Gemini score (3 workers, delay 0.5s)
+    # Tier 3: Gemini score (2 workers, delay 2s — tránh 429)
     scored: list[dict] = []
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         futs3 = {ex.submit(score, art): art for art in tier2}
         for f in as_completed(futs3):
             try:
@@ -602,6 +602,10 @@ def main():
     if not top:
         send_telegram(f"⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE} điểm.")
         return
+
+    # Cooldown 20s để API rate-limit hồi phục sau Tier 3
+    print("  Chờ 20s để API rate-limit hồi phục trước build_digest...")
+    time.sleep(20)
 
     # Tạo digest chính từ Gemini
     print(f"  Đang tạo bản tin từ {len(top)} bài...")
