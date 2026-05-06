@@ -542,30 +542,45 @@ def main():
     final = [c[0] for c in clusters]
     final.sort(key=lambda x: -x["score"]["total"])
 
-    # Lấy bài đáng đọc
-    top = [a for a in final if a["score"]["total"] >= MIN_SCORE][:12]
-    print(f"  Top bài (>={MIN_SCORE} điểm): {len(top)} bài")
+    # Lấy bài đáng đọc (full summary) và bài tham khảo (snippet)
+    top  = [a for a in final if a["score"]["total"] >= MIN_SCORE][:12]
+    refs = [a for a in final if a["score"]["total"] == MIN_SCORE - 1][:8]  # điểm 6
+    print(f"  Top bài (>={MIN_SCORE} điểm): {len(top)} bài | Tham khảo: {len(refs)} bài")
 
     if not top:
         send_telegram(f"⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE} điểm.")
         return
 
-    # Tạo digest + gửi song song Telegram + Email
+    # Tạo digest chính từ Gemini
     print(f"  Đang tạo bản tin từ {len(top)} bài...")
     digest = build_digest(top)
+
+    # Gắn thêm phần Tin tham khảo (dùng summary có sẵn từ Tier 3, không gọi Gemini thêm)
+    if refs:
+        ref_lines = ["\n\n📎 **TIN THAM KHẢO**\n"]
+        for a in refs:
+            summary = a["score"].get("summary", "").strip()
+            ref_lines.append(
+                f"• **{a['title']}**\n"
+                f"  {summary}\n"
+                f"  [đọc thêm]({a['url']})\n"
+            )
+        digest += "\n".join(ref_lines)
+
+    # Gửi song song Telegram + Email
     with ThreadPoolExecutor(max_workers=2) as ex:
         ft = ex.submit(send_telegram, digest)
         fe = ex.submit(send_email, digest)
         ft.result()
         fe.result()
 
-    # Cập nhật danh sách URL đã gửi
+    # Cập nhật danh sách URL đã gửi (cả top lẫn refs)
     now = time.time()
-    for a in top:
+    for a in top + refs:
         sent[a["url"]] = now
     save_sent(sent)
-    print(f"  💾 Đã lưu {len(top)} URL vào {SENT_FILE} (tổng: {len(sent)} URL)")
-    print(f"  ✅ Gửi Telegram xong! Tổng: {time.time()-t0:.1f}s")
+    print(f"  💾 Đã lưu {len(top)+len(refs)} URL vào {SENT_FILE} (tổng: {len(sent)} URL)")
+    print(f"  ✅ Gửi xong! Tổng: {time.time()-t0:.1f}s")
 
 
 if __name__ == "__main__":
