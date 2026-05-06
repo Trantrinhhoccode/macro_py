@@ -10,6 +10,7 @@ import re
 import smtplib
 import time
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -401,19 +402,33 @@ def send_telegram(text: str) -> None:
 
 
 # ─── Send Email ───────────────────────────────────────────────────────────────
-def send_email(markdown_text: str) -> None:
+THREAD_KEY = "_email_thread_id_"   # key đặc biệt lưu trong sent_urls.json
+
+
+def get_or_create_thread_id(sent: dict) -> str:
+    """Lấy Message-ID gốc của thread. Tạo mới nếu chưa có (lần chạy đầu tiên)."""
+    if THREAD_KEY not in sent:
+        sent[THREAD_KEY] = f"<tapro-digest-root-{uuid.uuid4().hex}@gmail.com>"
+    return sent[THREAD_KEY]
+
+
+def send_email(markdown_text: str, thread_id: str) -> None:
     if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
         print("  ⚠️  Bỏ qua gửi email: chưa cấu hình EMAIL_SENDER / EMAIL_APP_PASSWORD / EMAIL_RECIPIENT")
         return
     try:
         today = datetime.now().strftime("%d/%m/%Y")
         hour  = datetime.now().strftime("%H:%M")
-        subject = f"📊 Bản tin thị trường — {today} ({hour})"
 
-        # Chuyển Markdown → HTML cho phần body email
+        # Subject cố định → Gmail gom tất cả vào 1 thread
+        subject = "📊 TApro — Bản tin thị trường"
+
+        # Message-ID riêng cho email này
+        this_msg_id = f"<tapro-{int(time.time())}-{uuid.uuid4().hex[:8]}@gmail.com>"
+
+        # Chuyển Markdown → HTML
         body_html = md_to_html(markdown_text)
 
-        # Bọc vào template HTML đẹp hơn
         html = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -424,33 +439,37 @@ def send_email(markdown_text: str) -> None:
                  background: #f5f5f5; margin: 0; padding: 20px; color: #1a1a1a; }}
     .card     {{ background: #fff; border-radius: 12px; max-width: 680px;
                  margin: 0 auto; padding: 32px 36px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }}
-    h1        {{ font-size: 22px; margin: 0 0 24px; color: #111; }}
+    .timestamp{{ font-size: 13px; color: #888; margin-bottom: 20px; }}
     b         {{ color: #111; }}
     a         {{ color: #1a73e8; text-decoration: none; font-weight: 500; }}
     a:hover   {{ text-decoration: underline; }}
-    hr        {{ border: none; border-top: 1px solid #eee; margin: 24px 0; }}
     p         {{ line-height: 1.7; margin: 8px 0; }}
-    .footer   {{ font-size: 12px; color: #999; margin-top: 28px; text-align: center; }}
+    .footer   {{ font-size: 12px; color: #bbb; margin-top: 28px; text-align: center; }}
   </style>
 </head>
 <body>
   <div class="card">
+    <div class="timestamp">🕐 {today} · {hour} (GMT+7)</div>
     {body_html.replace(chr(10), '<br>')}
-    <div class="footer">TApro Daily Digest · {today} {hour} · Powered by Gemini AI</div>
+    <div class="footer">TApro Daily Digest · Powered by Gemini AI</div>
   </div>
 </body>
 </html>"""
 
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = f"TApro Digest <{EMAIL_SENDER}>"
-        msg["To"]      = EMAIL_RECIPIENT
+        msg["Subject"]    = subject
+        msg["From"]       = f"TApro Digest <{EMAIL_SENDER}>"
+        msg["To"]         = EMAIL_RECIPIENT
+        msg["Message-ID"] = this_msg_id
+        # Gom vào 1 thread bằng cách reference về message gốc
+        msg["In-Reply-To"] = thread_id
+        msg["References"]  = thread_id
         msg.attach(MIMEText(html, "html", "utf-8"))
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
             smtp.sendmail(EMAIL_SENDER, EMAIL_RECIPIENT, msg.as_string())
-        print(f"  ✅ Đã gửi email → {EMAIL_RECIPIENT}")
+        print(f"  ✅ Đã gửi email → {EMAIL_RECIPIENT} (thread: {thread_id[:40]}...)")
     except Exception as e:
         print(f"  ⚠️  Gửi email thất bại: {e}")
 
@@ -461,14 +480,21 @@ SENT_RETAIN_DAYS = 3  # nhớ URL đã gửi trong 3 ngày
 
 
 def load_sent() -> dict:
-    """Đọc danh sách URL đã gửi, tự loại bỏ entry quá cũ."""
+    """Đọc danh sách URL đã gửi, tự loại bỏ entry quá cũ.
+    Giữ lại các key đặc biệt (bắt đầu bằng _) như _email_thread_id_."""
     try:
         with open(SENT_FILE, encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
     cutoff = time.time() - SENT_RETAIN_DAYS * 86400
-    return {u: ts for u, ts in data.items() if isinstance(ts, (int, float)) and ts >= cutoff}
+    result = {}
+    for k, v in data.items():
+        if k.startswith("_"):          # key đặc biệt → giữ mãi mãi
+            result[k] = v
+        elif isinstance(v, (int, float)) and v >= cutoff:  # URL → prune nếu cũ
+            result[k] = v
+    return result
 
 
 def save_sent(sent: dict) -> None:
@@ -481,7 +507,9 @@ def main():
     t0 = time.time()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Bắt đầu pipeline...")
     sent = load_sent()
-    print(f"  Đã có {len(sent)} URL trong lịch sử (3 ngày gần nhất)")
+    thread_id = get_or_create_thread_id(sent)  # lấy/tạo thread ID cho email
+    url_count = sum(1 for k in sent if not k.startswith("_"))
+    print(f"  Đã có {url_count} URL trong lịch sử (3 ngày gần nhất)")
 
     # Tier 1: Thu thập URL song song
     collectors = {
@@ -579,10 +607,10 @@ def main():
             )
         digest += "\n".join(ref_lines)
 
-    # Gửi song song Telegram + Email
+    # Gửi song song Telegram + Email (email dùng thread_id để gom 1 thread)
     with ThreadPoolExecutor(max_workers=2) as ex:
         ft = ex.submit(send_telegram, digest)
-        fe = ex.submit(send_email, digest)
+        fe = ex.submit(send_email, digest, thread_id)
         ft.result()
         fe.result()
 
