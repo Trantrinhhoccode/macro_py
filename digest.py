@@ -258,13 +258,15 @@ def fetch_full_text(url: str) -> str:
 
 
 def build_digest(articles: list[dict]) -> str:
+    # Lưu map index → url để thay thế sau (Gemini KHÔNG tự chọn URL nữa)
+    url_map = {i: a["url"] for i, a in enumerate(articles, 1)}
+
     articles_text = ""
     for i, a in enumerate(articles, 1):
         content = fetch_full_text(a["url"])
         articles_text += (
             f"--- BÀI {i} ---\n"
             f"Tiêu đề: {a['title']}\n"
-            f"URL: {a['url']}\n"
             f"Nguồn: {a['source']} | Chủ đề: {a['score']['topic']} | Mood: {a['score']['mood']}\n"
             f"Nội dung: {content}\n\n"
         )
@@ -286,8 +288,9 @@ QUY TẮC ĐỊNH DẠNG (BẮT BUỘC TUÂN THỦ):
    - Chỉ số: **VN-Index 1.250 điểm**, **VN30**, **NIM 3,2%**, **ROE 18%**
    - Mọi số liệu khác có ý nghĩa thị trường
 4. Tiêu đề mỗi tin: dùng **...** in đậm.
-5. Sau MỖI tin (dưới đoạn nội dung), thêm DÒNG RIÊNG: [đọc thêm](URL_THẬT_CỦA_BÀI)
-   — copy URL từ mục "URL:" của bài đó. KHÔNG để placeholder, KHÔNG bỏ qua.
+5. Sau MỖI tin (dưới đoạn nội dung), thêm DÒNG RIÊNG chính xác:
+   {{{{LINK_N}}}}  ← thay N bằng số thứ tự bài (1, 2, 3...). Ví dụ bài 1 → {{{{LINK_1}}}}, bài 2 → {{{{LINK_2}}}}
+   TUYỆT ĐỐI không tự điền URL, chỉ đặt đúng marker {{{{LINK_N}}}}.
 6. Mỗi tin 4-6 câu, trích số liệu/tên chuyên gia/dữ kiện cụ thể.
 7. Không bỏ sót bài nào.
 
@@ -299,11 +302,11 @@ CẤU TRÚC OUTPUT:
 
 **[Tiêu đề bài 1]**
 [4-6 câu nội dung, BOLD mọi số liệu]
-[đọc thêm](URL_BÀI_1)
+{{{{LINK_1}}}}
 
 **[Tiêu đề bài 2]**
 [...]
-[đọc thêm](URL_BÀI_2)
+{{{{LINK_2}}}}
 
 🌍 **VĨ MÔ THẾ GIỚI**
 
@@ -326,7 +329,16 @@ CẤU TRÚC OUTPUT:
                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4000}}
     r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=90)
     r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    # Thay thế marker {{LINK_N}} bằng URL đúng của bài N
+    # (Gemini chỉ đặt marker, không tự chọn URL → tránh gắn nhầm link)
+    for i, article_url in url_map.items():
+        text = text.replace(f"{{{{LINK_{i}}}}}", f"[đọc thêm]({article_url})")
+    # Dọn marker còn sót (phòng khi Gemini bỏ sót)
+    text = re.sub(r"\{\{LINK_\d+\}\}", "", text)
+
+    return text
 
 
 # ─── Send Telegram ────────────────────────────────────────────────────────────
