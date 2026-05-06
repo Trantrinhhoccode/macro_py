@@ -13,7 +13,7 @@ permissions:
 jobs:
   send-digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
       - name: Checkout code

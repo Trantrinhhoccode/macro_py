@@ -328,8 +328,20 @@ CẤU TRÚC OUTPUT:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4000}}
-    r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=90)
-    r.raise_for_status()
+
+    # Retry với backoff khi bị 429 (rate-limit sau nhiều lần gọi ở Tier 3)
+    for attempt in range(5):
+        r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=90)
+        if r.status_code == 429:
+            wait = 30 * (attempt + 1)   # 30s, 60s, 90s, 120s, 150s
+            print(f"  build_digest 429 — chờ {wait}s (lần {attempt+1}/5)...")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        break
+    else:
+        raise RuntimeError("build_digest: vẫn bị 429 sau 5 lần thử")
+
     text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
     # Thay thế marker {{LINK_N}} bằng URL đúng của bài N
