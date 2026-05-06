@@ -7,10 +7,13 @@ import gzip
 import json
 import os
 import re
+import smtplib
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from html.parser import HTMLParser
 
 import requests
@@ -18,6 +21,9 @@ import requests
 # ─── Config (đọc từ env / GitHub Secrets) ────────────────────────────────────
 GEMINI_KEY   = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+EMAIL_SENDER   = os.getenv("EMAIL_SENDER", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
+EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "")
 BOT_TOKEN    = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID      = os.environ["TELEGRAM_CHAT_ID"]
 MIN_SCORE    = int(os.getenv("MIN_SCORE", "7"))
@@ -382,6 +388,61 @@ def send_telegram(text: str) -> None:
             )
 
 
+# ─── Send Email ───────────────────────────────────────────────────────────────
+def send_email(markdown_text: str) -> None:
+    if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
+        print("  ⚠️  Bỏ qua gửi email: chưa cấu hình EMAIL_SENDER / EMAIL_APP_PASSWORD / EMAIL_RECIPIENT")
+        return
+    try:
+        today = datetime.now().strftime("%d/%m/%Y")
+        hour  = datetime.now().strftime("%H:%M")
+        subject = f"📊 Bản tin thị trường — {today} ({hour})"
+
+        # Chuyển Markdown → HTML cho phần body email
+        body_html = md_to_html(markdown_text)
+
+        # Bọc vào template HTML đẹp hơn
+        html = f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body      {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                 background: #f5f5f5; margin: 0; padding: 20px; color: #1a1a1a; }}
+    .card     {{ background: #fff; border-radius: 12px; max-width: 680px;
+                 margin: 0 auto; padding: 32px 36px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }}
+    h1        {{ font-size: 22px; margin: 0 0 24px; color: #111; }}
+    b         {{ color: #111; }}
+    a         {{ color: #1a73e8; text-decoration: none; font-weight: 500; }}
+    a:hover   {{ text-decoration: underline; }}
+    hr        {{ border: none; border-top: 1px solid #eee; margin: 24px 0; }}
+    p         {{ line-height: 1.7; margin: 8px 0; }}
+    .footer   {{ font-size: 12px; color: #999; margin-top: 28px; text-align: center; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    {body_html.replace(chr(10), '<br>')}
+    <div class="footer">TApro Daily Digest · {today} {hour} · Powered by Gemini AI</div>
+  </div>
+</body>
+</html>"""
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = f"TApro Digest <{EMAIL_SENDER}>"
+        msg["To"]      = EMAIL_RECIPIENT
+        msg.attach(MIMEText(html, "html", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            smtp.sendmail(EMAIL_SENDER, EMAIL_RECIPIENT, msg.as_string())
+        print(f"  ✅ Đã gửi email → {EMAIL_RECIPIENT}")
+    except Exception as e:
+        print(f"  ⚠️  Gửi email thất bại: {e}")
+
+
 # ─── Dedup giữa các lần chạy ──────────────────────────────────────────────────
 SENT_FILE = "sent_urls.json"
 SENT_RETAIN_DAYS = 3  # nhớ URL đã gửi trong 3 ngày
@@ -489,10 +550,14 @@ def main():
         send_telegram(f"⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE} điểm.")
         return
 
-    # Tạo digest + gửi
+    # Tạo digest + gửi song song Telegram + Email
     print(f"  Đang tạo bản tin từ {len(top)} bài...")
     digest = build_digest(top)
-    send_telegram(digest)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        ft = ex.submit(send_telegram, digest)
+        fe = ex.submit(send_email, digest)
+        ft.result()
+        fe.result()
 
     # Cập nhật danh sách URL đã gửi
     now = time.time()
