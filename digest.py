@@ -576,7 +576,7 @@ def main():
             except Exception:
                 pass
     print(f"  Tier2: {len(tier2)} bài qua filter ({time.time()-t0:.1f}s)")
-    tier2 = tier2[:30]  # cap 30 bài để Tier3 không bị 429 liên tục
+    tier2 = tier2[:60]  # cap 60 bài — rate limiter _gemini_wait() giữ đúng 15 RPM
 
     if not tier2:
         send_telegram("⚠️ Hôm nay không có bài nào qua filter.")
