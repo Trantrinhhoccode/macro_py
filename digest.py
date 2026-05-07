@@ -370,6 +370,125 @@ CẤU TRÚC OUTPUT:
     return text
 
 
+# ─── Polymarket ───────────────────────────────────────────────────────────────
+_POLY_ANCHORS = [
+    # (từ khóa tìm kiếm, tên hiển thị, emoji)
+    ("fed cut interest rates 2026",    "Fed cắt lãi suất 2026",          "🏦"),
+    ("us recession 2026",              "Suy thoái Mỹ 2026",              "📉"),
+    ("strait of hormuz",               "Hormuz bình thường hóa",         "🛢"),
+    ("us china tariff deal",           "Mỹ-Trung đạt thỏa thuận thuế",  "⚖️"),
+]
+
+
+def _poly_bar(prob: float, width: int = 10) -> str:
+    filled = round(prob * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _poly_parse_market(m: dict) -> dict | None:
+    """Trích xuất YES%, NO%, vol từ 1 market object. Trả None nếu không parse được."""
+    try:
+        outcomes = m.get("outcomes", "[]")
+        if isinstance(outcomes, str):
+            outcomes = json.loads(outcomes)
+        prices = m.get("outcomePrices", "[]")
+        if isinstance(prices, str):
+            prices = json.loads(prices)
+        if len(outcomes) != 2 or len(prices) != 2:
+            return None
+        yes_prob = float(prices[0])
+        return {
+            "question": m.get("question", ""),
+            "yes":   round(yes_prob * 100),
+            "no":    round((1 - yes_prob) * 100),
+            "vol":   m.get("volumeNum",  0) or 0,
+            "vol24": m.get("volume24hr", 0) or 0,
+        }
+    except Exception:
+        return None
+
+
+def fetch_polymarket() -> dict:
+    """Fetch Polymarket: anchor markets + top-5 hot (24h volume). Trả {} nếu lỗi."""
+    result: dict = {"anchors": [], "hot": []}
+    base = "https://gamma-api.polymarket.com/markets"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        # ── Anchor markets: tìm theo keyword ──────────────────────────────────
+        for kw, display, emoji in _POLY_ANCHORS:
+            try:
+                r = requests.get(
+                    base,
+                    params={"limit": 5, "q": kw, "active": "true", "closed": "false"},
+                    headers=headers, timeout=20,
+                )
+                if r.status_code != 200:
+                    continue
+                items = r.json()
+                if not items:
+                    continue
+                parsed = _poly_parse_market(items[0])
+                if parsed:
+                    result["anchors"].append({**parsed, "display": display, "emoji": emoji})
+            except Exception:
+                continue
+
+        # ── Top-5 hot markets theo volume 24h ─────────────────────────────────
+        r = requests.get(
+            base,
+            params={"limit": 50, "order": "volume24hr", "ascending": "false",
+                    "active": "true", "closed": "false"},
+            headers=headers, timeout=20,
+        )
+        if r.status_code == 200:
+            for m in r.json():
+                parsed = _poly_parse_market(m)
+                if not parsed or parsed["vol24"] < 10_000:
+                    continue
+                result["hot"].append(parsed)
+                if len(result["hot"]) >= 5:
+                    break
+    except Exception as e:
+        print(f"  ⚠️  Polymarket fetch lỗi: {e}")
+    return result
+
+
+def build_polymarket_section(data: dict) -> str:
+    """Tạo chuỗi hiển thị Polymarket để ghép vào cuối digest."""
+    if not data.get("anchors") and not data.get("hot"):
+        return ""
+
+    lines = [
+        "\n\n🎯 **POLYMARKET — THỊ TRƯỜNG DỰ BÁO TOÀN CẦU**",
+        "_(Xác suất từ hàng triệu USD đặt cược thực tế)_",
+    ]
+
+    if data["anchors"]:
+        lines.append("\n**📊 Chỉ số theo dõi thường xuyên:**\n")
+        for a in data["anchors"]:
+            bar = _poly_bar(a["yes"] / 100)
+            vol_m = a["vol"] / 1_000_000 if a["vol"] else 0
+            lines.append(
+                f"• {a['emoji']} {a['display']}\n"
+                f"  YES **{a['yes']}%** {bar} NO {a['no']}%  _(vol: ${vol_m:.1f}M)_"
+            )
+
+    if data["hot"]:
+        lines.append("\n**🔥 Đang hot 24h gần nhất:**\n")
+        for i, m in enumerate(data["hot"], 1):
+            vol_m = m["vol24"] / 1_000_000 if m["vol24"] else 0
+            q = m["question"]
+            if len(q) > 80:
+                q = q[:77] + "..."
+            lines.append(
+                f"{i}. {q}\n"
+                f"   YES **{m['yes']}%** / NO {m['no']}%  _(vol 24h: ${vol_m:.1f}M)_"
+            )
+
+    lines.append("\n_Nguồn: polymarket.com_")
+    return "\n".join(lines)
+
+
 # ─── Send Telegram ────────────────────────────────────────────────────────────
 def md_to_html(text: str) -> str:
     """Chuyển Markdown từ Gemini sang HTML cho Telegram (parse_mode=HTML)
@@ -650,6 +769,19 @@ def main():
             digest = digest[:split_marker].rstrip() + ref_block + "\n\n" + digest[split_marker:]
         else:
             digest += ref_block  # fallback: nếu không tìm thấy thì append cuối
+
+    # Polymarket — ghép vào cuối digest
+    print("  Đang lấy dữ liệu Polymarket...")
+    try:
+        poly_data    = fetch_polymarket()
+        poly_section = build_polymarket_section(poly_data)
+        if poly_section:
+            digest += poly_section
+            print(f"  Polymarket: {len(poly_data['anchors'])} anchor, {len(poly_data['hot'])} hot")
+        else:
+            print("  Polymarket: không có dữ liệu (bỏ qua)")
+    except Exception as e:
+        print(f"  ⚠️  Polymarket lỗi: {e}")
 
     # Gửi song song Telegram + Email (email dùng thread_id để gom 1 thread)
     with ThreadPoolExecutor(max_workers=2) as ex:
