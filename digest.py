@@ -453,29 +453,59 @@ def fetch_polymarket() -> dict:
     return result
 
 
-def build_polymarket_section(data: dict) -> str:
-    """Tạo chuỗi hiển thị Polymarket để ghép vào cuối digest."""
-    if not data.get("anchors") and not data.get("hot"):
-        return ""
+_POLY_CHANGE_THRESHOLD = 3   # hiển thị anchor nếu YES% thay đổi >= 3% so với lần trước
+
+
+def build_polymarket_section(data: dict, prev_anchors: dict) -> tuple[str, dict]:
+    """Tạo chuỗi hiển thị Polymarket + dict anchor mới để lưu vào sent.
+
+    prev_anchors: {display_name: yes_pct} đọc từ sent_urls.json
+    Trả về: (section_string, updated_prev_anchors)
+    """
+    # ── Lọc anchor: chỉ show nếu thay đổi >= threshold hoặc chưa từng ghi nhận ──
+    changed: list[dict] = []
+    new_prev = dict(prev_anchors)   # copy để cập nhật
+    for a in data.get("anchors", []):
+        key  = a["display"]
+        prev = prev_anchors.get(key)  # None nếu lần đầu
+        diff = abs(a["yes"] - prev) if prev is not None else _POLY_CHANGE_THRESHOLD
+        if diff >= _POLY_CHANGE_THRESHOLD:
+            changed.append({**a, "_diff": diff, "_prev": prev})
+        new_prev[key] = a["yes"]   # luôn cập nhật giá trị mới nhất
+
+    hot = data.get("hot", [])
+
+    if not changed and not hot:
+        return "", new_prev
 
     lines = [
         "\n\n🎯 **POLYMARKET — THỊ TRƯỜNG DỰ BÁO TOÀN CẦU**",
         "_(Xác suất từ hàng triệu USD đặt cược thực tế)_",
     ]
 
-    if data["anchors"]:
-        lines.append("\n**📊 Chỉ số theo dõi thường xuyên:**\n")
-        for a in data["anchors"]:
-            bar = _poly_bar(a["yes"] / 100)
-            vol_m = a["vol"] / 1_000_000 if a["vol"] else 0
+    # ── Anchor block (chỉ khi có thay đổi) ───────────────────────────────────
+    if changed:
+        lines.append("\n**📊 Chỉ số biến động hôm nay:**\n")
+        for a in changed:
+            bar    = _poly_bar(a["yes"] / 100)
+            vol_m  = a["vol"] / 1_000_000 if a["vol"] else 0
+            prev   = a["_prev"]
+            diff   = a["_diff"]
+            if prev is None:
+                trend = ""
+            elif a["yes"] > prev:
+                trend = f" _(+{diff}%)_"
+            else:
+                trend = f" _(-{diff}%)_"
             lines.append(
-                f"• {a['emoji']} {a['display']}\n"
+                f"• {a['emoji']} {a['display']}{trend}\n"
                 f"  YES **{a['yes']}%** {bar} NO {a['no']}%  _(vol: ${vol_m:.1f}M)_"
             )
 
-    if data["hot"]:
+    # ── Hot markets (luôn hiển thị) ───────────────────────────────────────────
+    if hot:
         lines.append("\n**🔥 Đang hot 24h gần nhất:**\n")
-        for i, m in enumerate(data["hot"], 1):
+        for i, m in enumerate(hot, 1):
             vol_m = m["vol24"] / 1_000_000 if m["vol24"] else 0
             q = m["question"]
             if len(q) > 80:
@@ -486,7 +516,7 @@ def build_polymarket_section(data: dict) -> str:
             )
 
     lines.append("\n_Nguồn: polymarket.com_")
-    return "\n".join(lines)
+    return "\n".join(lines), new_prev
 
 
 # ─── Send Telegram ────────────────────────────────────────────────────────────
@@ -773,13 +803,24 @@ def main():
     # Polymarket — ghép vào cuối digest
     print("  Đang lấy dữ liệu Polymarket...")
     try:
+        # Đọc anchor YES% từ lần chạy trước (lưu trong sent_urls.json)
+        prev_anchors = {
+            k[len("_poly_"):]: v
+            for k, v in sent.items()
+            if k.startswith("_poly_")
+        }
         poly_data    = fetch_polymarket()
-        poly_section = build_polymarket_section(poly_data)
+        poly_section, new_anchors = build_polymarket_section(poly_data, prev_anchors)
         if poly_section:
             digest += poly_section
-            print(f"  Polymarket: {len(poly_data['anchors'])} anchor, {len(poly_data['hot'])} hot")
+            n_changed = sum(1 for a in poly_data["anchors"]
+                            if abs(a["yes"] - prev_anchors.get(a["display"], -99)) >= _POLY_CHANGE_THRESHOLD)
+            print(f"  Polymarket: {n_changed} anchor thay đổi, {len(poly_data['hot'])} hot")
         else:
-            print("  Polymarket: không có dữ liệu (bỏ qua)")
+            print("  Polymarket: không có dữ liệu / anchor chưa thay đổi (bỏ qua)")
+        # Lưu giá trị anchor mới nhất vào sent để so sánh lần sau
+        for display, yes_pct in new_anchors.items():
+            sent[f"_poly_{display}"] = yes_pct
     except Exception as e:
         print(f"  ⚠️  Polymarket lỗi: {e}")
 
