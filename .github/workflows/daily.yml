@@ -2,9 +2,9 @@ name: Daily Market Digest
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 08:00 sáng giờ Việt Nam (UTC+7 → UTC 01:00)
-    - cron: '0 5 * * *'   # 12:00 trưa giờ Việt Nam (UTC+7 → UTC 05:00)
-    - cron: '0 13 * * *'  # 20:00 tối giờ Việt Nam (UTC+7 → UTC 13:00)
+    - cron: '0 23 * * *'  # 06:00 sáng giờ Việt Nam (UTC+7 → UTC 23:00)
+    - cron: '0 3 * * *'   # 10:00 sáng giờ Việt Nam (UTC+7 → UTC 03:00)
+    - cron: '0 9 * * *'   # 16:00 chiều giờ Việt Nam (UTC+7 → UTC 09:00)
   workflow_dispatch:        # cho phép chạy thủ công từ GitHub UI
 
 permissions:
