@@ -443,7 +443,7 @@ def fetch_polymarket() -> dict:
         if r.status_code == 200:
             for m in r.json():
                 parsed = _poly_parse_market(m)
-                if not parsed or parsed["vol24"] < 10_000:
+                if not parsed:
                     continue
                 result["hot"].append(parsed)
                 if len(result["hot"]) >= 5:
