@@ -559,23 +559,37 @@ def send_telegram(text: str) -> None:
         parts.append(text[:split_at])
         text = text[split_at:].lstrip()
     parts.append(text)
-    for part in parts:
-        r = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": part, "parse_mode": "HTML",
-                  "disable_web_page_preview": True},
-            timeout=15,
-        )
-        if not r.json().get("ok"):
-            print(f"  ⚠️  Telegram HTML lỗi: {r.json().get('description')}")
-            # Fallback: gỡ tag, gửi plain text
-            plain = re.sub(r"<[^>]+>", "", part)
-            plain = plain.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": CHAT_ID, "text": plain, "disable_web_page_preview": True},
-                timeout=15,
-            )
+
+    for idx, part in enumerate(parts, 1):
+        sent_ok = False
+        for attempt in range(3):   # retry tối đa 3 lần nếu timeout
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": CHAT_ID, "text": part, "parse_mode": "HTML",
+                          "disable_web_page_preview": True},
+                    timeout=30,    # tăng lên 30s (digest dài → server xử lý lâu hơn)
+                )
+                if r.json().get("ok"):
+                    sent_ok = True
+                    break
+                # Lỗi parse HTML → fallback plain text ngay, không retry
+                print(f"  ⚠️  Telegram HTML lỗi (phần {idx}): {r.json().get('description')}")
+                plain = re.sub(r"<[^>]+>", "", part)
+                plain = plain.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": CHAT_ID, "text": plain, "disable_web_page_preview": True},
+                    timeout=30,
+                )
+                sent_ok = True
+                break
+            except Exception as e:
+                print(f"  ⚠️  Telegram timeout/lỗi (phần {idx}, lần {attempt+1}/3): {e}")
+                if attempt < 2:
+                    time.sleep(10 * (attempt + 1))   # chờ 10s, 20s rồi mới retry
+        if not sent_ok:
+            print(f"  ❌ Bỏ qua phần {idx}/{len(parts)} sau 3 lần thất bại")
 
 
 # ─── Send Email ───────────────────────────────────────────────────────────────
@@ -828,8 +842,11 @@ def main():
     with ThreadPoolExecutor(max_workers=2) as ex:
         ft = ex.submit(send_telegram, digest)
         fe = ex.submit(send_email, digest, thread_id)
-        ft.result()
-        fe.result()
+        for label, fut in [("Telegram", ft), ("Email", fe)]:
+            try:
+                fut.result()
+            except Exception as e:
+                print(f"  ❌ {label} thất bại (không crash pipeline): {e}")
 
     # Cập nhật danh sách URL đã gửi (cả top lẫn refs)
     now = time.time()
