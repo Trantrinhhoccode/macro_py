@@ -71,6 +71,23 @@ def fetch(url: str) -> str | None:
         return None
 
 
+_MAX_AGE_HOURS = 72   # chỉ lấy bài đăng trong vòng 72h (3 ngày) gần nhất
+
+
+def _url_date_too_old(url: str) -> bool:
+    """Pre-filter nhanh: nếu URL chứa YYYYMMDD và quá _MAX_AGE_HOURS → bỏ (không cần fetch)."""
+    m = re.search(r'(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])', url)
+    if not m:
+        return False   # URL không rõ ngày → không lọc
+    try:
+        pub = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                       tzinfo=timezone.utc)
+        age_h = (datetime.now(timezone.utc) - pub).total_seconds() / 3600
+        return age_h > _MAX_AGE_HOURS
+    except Exception:
+        return False
+
+
 class _Parser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -78,6 +95,7 @@ class _Parser(HTMLParser):
         self.title = ""
         self.content: list[str] = []
         self.description = ""
+        self.pub_date = ""     # article:published_time nếu có
 
     def handle_starttag(self, tag, attrs):
         d = dict(attrs)
@@ -92,6 +110,10 @@ class _Parser(HTMLParser):
             prop = d.get("property", "") or d.get("name", "")
             if prop in ("og:description", "description") and not self.description:
                 self.description = d.get("content", "")
+            # Lấy ngày đăng từ OpenGraph / standard meta
+            if prop in ("article:published_time", "og:article:published_time",
+                        "article:modified_time", "og:updated_time") and not self.pub_date:
+                self.pub_date = d.get("content", "")
         elif tag == "title":
             self.in_title = True
 
@@ -113,12 +135,21 @@ def parse(url: str, html: str) -> dict:
     try: p.feed(html)
     except Exception: pass
     body = " ".join(p.content)
+
+    # Fallback: thử đọc datePublished từ JSON-LD nếu meta tag không có
+    pub_date = p.pub_date
+    if not pub_date:
+        ld = re.search(r'"datePublished"\s*:\s*"([^"]+)"', html[:15000])
+        if ld:
+            pub_date = ld.group(1)
+
     return {
         "url": url,
         "title": p.title or "",
         "description": p.description or "",
         "word_count": len(body.split()),
         "content_first_500": body[:5000],
+        "pub_date": pub_date,
         "has_numbers": bool(re.search(
             r"\d+([.,]\d+)?\s*(%|tỷ|triệu|nghìn|USD|VNĐ|VND|đồng|điểm|tấn|km)", body, re.I
         )),
@@ -209,7 +240,22 @@ def collect_bbw() -> list[str]:
 
 
 # ─── Tier 2: fetch + filter ────────────────────────────────────────────────────
+def _parse_pub_age_hours(pub_date: str) -> float | None:
+    """Tính số giờ kể từ khi bài đăng. Trả None nếu không parse được."""
+    if not pub_date:
+        return None
+    try:
+        dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600
+    except Exception:
+        return None
+
+
 def process(src: str, url: str) -> dict | None:
+    # Lớp 1: URL pre-filter — không cần fetch nếu URL chứa YYYYMMDD quá cũ
+    if _url_date_too_old(url):
+        return None
+
     html = fetch(url)
     if not html: return None
     if src == "BBW":
@@ -225,6 +271,12 @@ def process(src: str, url: str) -> dict | None:
     if not art["has_numbers"]: return None
     if not art["title"]: return None
     if re.search(r"(\?|sốc|kinh hoàng|bất ngờ|gây chú ý)", art["title"], re.I): return None
+
+    # Lớp 2: Meta date filter — dùng article:published_time nếu có
+    age_h = _parse_pub_age_hours(art.get("pub_date", ""))
+    if age_h is not None and age_h > _MAX_AGE_HOURS:
+        return None   # bài cũ hơn 72h → bỏ
+
     return art
 
 
