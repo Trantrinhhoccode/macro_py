@@ -13,7 +13,14 @@ import time
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+VN_TZ = timezone(timedelta(hours=7))   # UTC+7, dùng thống nhất thay cho now_vn()
+
+
+def now_vn() -> datetime:
+    """Trả về datetime hiện tại theo giờ Việt Nam (UTC+7), chạy đúng cả local lẫn GitHub Actions."""
+    return datetime.now(VN_TZ)
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html.parser import HTMLParser
@@ -286,7 +293,7 @@ def build_digest(articles: list[dict]) -> str:
             f"Nguồn: {a['source']} | Chủ đề: {a['score']['topic']} | Mood: {a['score']['mood']}\n"
             f"Nội dung: {content}\n\n"
         )
-    today = datetime.now().strftime("%d/%m/%Y")
+    today = now_vn().strftime("%d/%m/%Y")
     prompt = f"""Bạn là chuyên gia phân tích đầu tư chứng khoán Việt Nam.
 Dưới đây là nội dung {len(articles)} bài báo chất lượng cao ngày {today}:
 
@@ -608,8 +615,8 @@ def send_email(markdown_text: str, thread_id: str) -> None:
         print("  ⚠️  Bỏ qua gửi email: chưa cấu hình EMAIL_SENDER / EMAIL_APP_PASSWORD / EMAIL_RECIPIENT")
         return
     try:
-        today = datetime.now().strftime("%d/%m/%Y")
-        hour  = datetime.now().strftime("%H:%M")
+        today = now_vn().strftime("%d/%m/%Y")
+        hour  = now_vn().strftime("%H:%M")
 
         # Subject cố định → Gmail gom tất cả vào 1 thread
         subject = "📊 TApro — Bản tin thị trường"
@@ -699,7 +706,7 @@ def save_sent(sent: dict) -> None:
 # ─── Main pipeline ────────────────────────────────────────────────────────────
 def main():
     t0 = time.time()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Bắt đầu pipeline...")
+    print(f"[{now_vn().strftime('%H:%M:%S')}] Bắt đầu pipeline...")
     sent = load_sent()
     thread_id = get_or_create_thread_id(sent)  # lấy/tạo thread ID cho email
     url_count = sum(1 for k in sent if not k.startswith("_"))
