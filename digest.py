@@ -430,12 +430,34 @@ CẤU TRÚC OUTPUT:
 
 
 # ─── Polymarket ───────────────────────────────────────────────────────────────
-_POLY_ANCHORS = [
-    # (từ khóa tìm kiếm, tên hiển thị, emoji)
-    ("fed cut interest rates 2026",    "Fed cắt lãi suất 2026",          "🏦"),
-    ("us recession 2026",              "Suy thoái Mỹ 2026",              "📉"),
-    ("strait of hormuz",               "Hormuz bình thường hóa",         "🛢"),
-    ("us china tariff deal",           "Mỹ-Trung đạt thỏa thuận thuế",  "⚖️"),
+# Nhóm anchor: (emoji, tên nhóm VN, danh sách keyword tìm trong question tiếng Anh)
+# Mỗi nhóm: keyword phải có MẶT, không_có danh sách keyword bị loại trừ
+_POLY_ANCHOR_GROUPS = [
+    # (emoji, display, must_have_any, must_not_have_any)
+    ("🏦", "Fed / Lãi suất",
+        ["rate cut", "rate cuts", "no fed rate", "fed rate cut"],
+        ["increase interest", "raise interest"]),
+    ("📉", "Suy thoái Mỹ",
+        ["recession"],
+        []),
+    ("🛢",  "Iran & Hormuz",
+        ["hormuz", "iran peace", "iran deal", "us x iran"],
+        []),
+    ("🇹🇼", "Trung Quốc / Đài Loan",
+        ["china invade taiwan", "china blockade taiwan", "china x taiwan",
+         "china taiwan", "taiwan invasion"],
+        []),
+]
+
+# Loại bỏ các market không liên quan (thể thao, giải trí, chính trị xa)
+_POLY_EXCLUDE_KW = [
+    "2028", "fifa", "world cup", "nba", "nfl", "ufc", "mlb", "nhl",
+    "album", "jesus", "alien", "kardashian", "lebron", "rihanna", "carti",
+    "mrbeast", "clooney", "sanders", "warnock", "pence", "thune", "beto",
+    "cheney", "clinton", "walz", "obama", "trump jr", "eric trump",
+    "baseball", "basketball", "hockey", "soccer", "tennis", "golf",
+    "spread:", "o/u ", " vs. ",  # sports lines
+    "tweet", "post ", "elon musk post",
 ]
 
 
@@ -467,46 +489,59 @@ def _poly_parse_market(m: dict) -> dict | None:
         return None
 
 
+def _poly_is_junk(question: str) -> bool:
+    q = question.lower()
+    return any(kw in q for kw in _POLY_EXCLUDE_KW)
+
+
 def fetch_polymarket() -> dict:
-    """Fetch Polymarket: anchor markets + top-5 hot (24h volume). Trả {} nếu lỗi."""
+    """Fetch Polymarket: anchor markets + top-5 hot. Fetch 1 lần, filter client-side."""
     result: dict = {"anchors": [], "hot": []}
     base = "https://gamma-api.polymarket.com/markets"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        # ── Anchor markets: tìm theo keyword ──────────────────────────────────
-        for kw, display, emoji in _POLY_ANCHORS:
-            try:
-                r = requests.get(
-                    base,
-                    params={"limit": 5, "q": kw, "active": "true", "closed": "false"},
-                    headers=headers, timeout=20,
-                )
-                if r.status_code != 200:
-                    continue
-                items = r.json()
-                if not items:
-                    continue
-                parsed = _poly_parse_market(items[0])
-                if parsed:
-                    result["anchors"].append({**parsed, "display": display, "emoji": emoji})
-            except Exception:
-                continue
-
-        # ── Top-5 hot markets theo volume 24h ─────────────────────────────────
+        # ── Fetch 500 market theo tổng volume (1 request duy nhất) ───────────
         r = requests.get(
             base,
-            params={"limit": 50, "order": "volume24hr", "ascending": "false",
+            params={"limit": 500, "order": "volumeNum", "ascending": "false",
                     "active": "true", "closed": "false"},
-            headers=headers, timeout=20,
+            headers=headers, timeout=30,
         )
-        if r.status_code == 200:
-            for m in r.json():
-                parsed = _poly_parse_market(m)
-                if not parsed:
+        if r.status_code != 200:
+            return result
+        all_markets = r.json()
+
+        # Parse tất cả thành dicts, lọc binary + junk
+        parsed_all: list[dict] = []
+        for m in all_markets:
+            if _poly_is_junk(m.get("question", "")):
+                continue
+            p = _poly_parse_market(m)
+            if p:
+                parsed_all.append(p)
+
+        # ── Anchor: với mỗi nhóm, lấy market khớp keyword, vol cao nhất, còn open ─
+        for emoji, display, must_have, must_not in _POLY_ANCHOR_GROUPS:
+            best = None
+            for p in parsed_all:
+                q = p["question"].lower()
+                # Phải có ít nhất 1 keyword
+                if not any(kw in q for kw in must_have):
                     continue
-                result["hot"].append(parsed)
-                if len(result["hot"]) >= 5:
-                    break
+                # Không được chứa keyword loại trừ
+                if any(kw in q for kw in must_not):
+                    continue
+                # Bỏ qua market đã resolve (YES=0% hoặc 100%)
+                if p["yes"] in (0, 100):
+                    continue
+                best = p
+                break   # parsed_all đã sort theo volumeNum giảm dần
+            if best:
+                result["anchors"].append({**best, "display": display, "emoji": emoji})
+
+        # ── Hot: top-5 theo volume 24h (đã loại junk) ────────────────────────
+        sorted_by_24h = sorted(parsed_all, key=lambda x: -x["vol24"])
+        result["hot"] = sorted_by_24h[:5]
     except Exception as e:
         print(f"  ⚠️  Polymarket fetch lỗi: {e}")
     return result
@@ -556,8 +591,10 @@ def build_polymarket_section(data: dict, prev_anchors: dict) -> tuple[str, dict]
                 trend = f" _(+{diff}%)_"
             else:
                 trend = f" _(-{diff}%)_"
+            # Hiển thị tên nhóm + câu hỏi thực tế (truncate 70 ký tự)
+            q_short = a["question"][:70] + ("…" if len(a["question"]) > 70 else "")
             lines.append(
-                f"• {a['emoji']} {a['display']}{trend}\n"
+                f"• {a['emoji']} **{a['display']}**{trend}: _{q_short}_\n"
                 f"  YES **{a['yes']}%** {bar} NO {a['no']}%  _(tổng vol: ${vol_m:.1f}M)_"
             )
 
