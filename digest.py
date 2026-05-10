@@ -558,20 +558,20 @@ def build_polymarket_section(data: dict, prev_anchors: dict) -> tuple[str, dict]
                 trend = f" _(-{diff}%)_"
             lines.append(
                 f"• {a['emoji']} {a['display']}{trend}\n"
-                f"  YES **{a['yes']}%** {bar} NO {a['no']}%  _(vol: ${vol_m:.1f}M)_"
+                f"  YES **{a['yes']}%** {bar} NO {a['no']}%  _(tổng vol: ${vol_m:.1f}M)_"
             )
 
     # ── Hot markets (luôn hiển thị) ───────────────────────────────────────────
     if hot:
         lines.append("\n**🔥 Đang hot 24h gần nhất:**\n")
         for i, m in enumerate(hot, 1):
-            vol_m = m["vol24"] / 1_000_000 if m["vol24"] else 0
+            vol_m = m["vol"] / 1_000_000 if m["vol"] else 0   # đổi sang tổng vol
             q = m["question"]
             if len(q) > 80:
                 q = q[:77] + "..."
             lines.append(
                 f"{i}. {q}\n"
-                f"   YES **{m['yes']}%** / NO {m['no']}%  _(vol 24h: ${vol_m:.1f}M)_"
+                f"   YES **{m['yes']}%** / NO {m['no']}%  _(tổng vol: ${vol_m:.1f}M)_"
             )
 
     lines.append("\n_Nguồn: polymarket.com_")
