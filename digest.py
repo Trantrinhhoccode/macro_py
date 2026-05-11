@@ -433,6 +433,19 @@ CẤU TRÚC OUTPUT:
     # Dọn marker còn sót (phòng khi Gemini bỏ sót)
     text = re.sub(r"\{\{LINK_\d+\}\}", "", text)
 
+    # Xóa link [đọc thêm] bị Gemini đặt lạc vào phần ⚠️ Rủi ro / 💡 Gợi ý
+    # (2 section này không có bài riêng lẻ — link orphan ở đây là lỗi Gemini)
+    risk_pos = -1
+    for marker in ["⚠️", "⚠"]:
+        idx = text.find(marker)
+        if idx != -1:
+            risk_pos = idx
+            break
+    if risk_pos != -1:
+        before = text[:risk_pos]
+        after  = re.sub(r'\[đọc thêm\]\([^)]+\)\n?', '', text[risk_pos:])
+        text   = before + after
+
     return text
 
 
