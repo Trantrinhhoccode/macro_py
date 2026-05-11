@@ -174,6 +174,9 @@ def collect_vneconomy() -> list[str]:
         if any(u.startswith(p) for p in SKIP_PRE): continue
         if any(kw in u for kw in SKIP_KW): continue
         if SKIP_SUF.search(u): continue
+        # Bài báo VnEconomy có dạng /category/slug.htm (≥2 cấp path)
+        # URL 1 cấp (/tag-name.htm) là trang category/tag → loại
+        if u.count("/") < 2: continue
         if len(u.rstrip("/").replace(".htm","").split("/")[-1].split("-")) < 5: continue
         out.append("https://vneconomy.vn" + u)
     return list(set(out))
@@ -271,6 +274,10 @@ def process(src: str, url: str) -> dict | None:
     if not art["has_numbers"]: return None
     if not art["title"]: return None
     if re.search(r"(\?|sốc|kinh hoàng|bất ngờ|gây chú ý)", art["title"], re.I): return None
+    # Loại trang category/tag (title kết thúc bằng "- VnEconomy", "| CafeF"...)
+    if re.search(r"\s[-|]\s*(VnEconomy|CafeF|Báo Đầu Tư|Nhịp Cầu Đầu Tư|The Saigon Times)\s*$",
+                 art["title"], re.I):
+        return None
 
     # Lớp 2: Meta date filter — dùng article:published_time nếu có
     age_h = _parse_pub_age_hours(art.get("pub_date", ""))
