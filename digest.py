@@ -633,6 +633,17 @@ def build_polymarket_section(data: dict, prev_anchors: dict) -> tuple[str, dict]
     return "\n".join(lines), new_prev
 
 
+# ─── Markdown → HTML (dùng cho email) ───────────────────────────────────────
+def md_to_html(text: str) -> str:
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)",
+                  lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+    text = re.sub(r"(?<![*\w])\*([^*\n][^*\n]*?)\*(?![*\w])", r"<b>\1</b>", text)
+    text = re.sub(r"^[ \t]*\*[ \t]+", "•  ", text, flags=re.MULTILINE)
+    return text
+
+
 # ─── Send Email ───────────────────────────────────────────────────────────────
 THREAD_KEY = "_email_thread_id_"   # key đặc biệt lưu trong sent_urls.json
 
