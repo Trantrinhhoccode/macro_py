@@ -47,8 +47,6 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 EMAIL_SENDER   = os.getenv("EMAIL_SENDER", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
 EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "")
-BOT_TOKEN    = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID      = os.environ["TELEGRAM_CHAT_ID"]
 MIN_SCORE    = int(os.getenv("MIN_SCORE", "7"))
 
 HDR = {
@@ -635,79 +633,6 @@ def build_polymarket_section(data: dict, prev_anchors: dict) -> tuple[str, dict]
     return "\n".join(lines), new_prev
 
 
-# ─── Send Telegram ────────────────────────────────────────────────────────────
-def md_to_html(text: str) -> str:
-    """Chuyển Markdown từ Gemini sang HTML cho Telegram (parse_mode=HTML)
-    — bền hơn Markdown vì không bị break bởi dấu * lẻ trong bullet."""
-    # 1. Escape ký tự HTML đặc biệt trước khi insert tag
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    # 2. Link [text](url) → <a href="url">text</a>
-    text = re.sub(
-        r"\[([^\]]+)\]\(([^)]+)\)",
-        lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>',
-        text,
-    )
-
-    # 3. **bold** → <b>bold</b>  (cho phép xuống dòng trong bold)
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
-
-    # 4. *bold* (single-star) → <b>bold</b>  (chỉ khi không phải bullet đầu dòng)
-    text = re.sub(
-        r"(?<![*\w])\*([^*\n][^*\n]*?)\*(?![*\w])",
-        r"<b>\1</b>",
-        text,
-    )
-
-    # 5. Bullet `*   ` đầu dòng → `•  ` để tránh nhầm với bold
-    text = re.sub(r"^[ \t]*\*[ \t]+", "•  ", text, flags=re.MULTILINE)
-
-    return text
-
-
-def send_telegram(text: str) -> None:
-    MAX = 4000
-    text = md_to_html(text)
-    parts = []
-    while len(text) > MAX:
-        split_at = text.rfind("\n\n", 0, MAX)
-        if split_at == -1: split_at = MAX
-        parts.append(text[:split_at])
-        text = text[split_at:].lstrip()
-    parts.append(text)
-
-    for idx, part in enumerate(parts, 1):
-        sent_ok = False
-        for attempt in range(3):   # retry tối đa 3 lần nếu timeout
-            try:
-                r = requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={"chat_id": CHAT_ID, "text": part, "parse_mode": "HTML",
-                          "disable_web_page_preview": True},
-                    timeout=30,    # tăng lên 30s (digest dài → server xử lý lâu hơn)
-                )
-                if r.json().get("ok"):
-                    sent_ok = True
-                    break
-                # Lỗi parse HTML → fallback plain text ngay, không retry
-                print(f"  ⚠️  Telegram HTML lỗi (phần {idx}): {r.json().get('description')}")
-                plain = re.sub(r"<[^>]+>", "", part)
-                plain = plain.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={"chat_id": CHAT_ID, "text": plain, "disable_web_page_preview": True},
-                    timeout=30,
-                )
-                sent_ok = True
-                break
-            except Exception as e:
-                print(f"  ⚠️  Telegram timeout/lỗi (phần {idx}, lần {attempt+1}/3): {e}")
-                if attempt < 2:
-                    time.sleep(10 * (attempt + 1))   # chờ 10s, 20s rồi mới retry
-        if not sent_ok:
-            print(f"  ❌ Bỏ qua phần {idx}/{len(parts)} sau 3 lần thất bại")
-
-
 # ─── Send Email ───────────────────────────────────────────────────────────────
 THREAD_KEY = "_email_thread_id_"   # key đặc biệt lưu trong sent_urls.json
 
@@ -898,7 +823,7 @@ def main():
     print(f"  Top bài (>={MIN_SCORE} điểm): {len(top)} bài | Tham khảo: {len(refs)} bài")
 
     if not top:
-        send_telegram(f"⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE} điểm.")
+        print(f"  ⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE} điểm.")
         return
 
     # Tạo digest chính từ Gemini
@@ -954,15 +879,11 @@ def main():
     except Exception as e:
         print(f"  ⚠️  Polymarket lỗi: {e}")
 
-    # Gửi song song Telegram + Email (email dùng thread_id để gom 1 thread)
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        ft = ex.submit(send_telegram, digest)
-        fe = ex.submit(send_email, digest, thread_id)
-        for label, fut in [("Telegram", ft), ("Email", fe)]:
-            try:
-                fut.result()
-            except Exception as e:
-                print(f"  ❌ {label} thất bại (không crash pipeline): {e}")
+    # Gửi Email
+    try:
+        send_email(digest, thread_id)
+    except Exception as e:
+        print(f"  ❌ Email thất bại: {e}")
 
     # Cập nhật danh sách URL đã gửi (cả top lẫn refs)
     now = time.time()
