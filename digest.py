@@ -1,6 +1,6 @@
 """
 TApro Daily Digest — chạy độc lập, không cần DB.
-Crawl tin → Gemini score → Tạo bản tin → Gửi Telegram.
+Crawl tin → Gemini score → Tạo bản tin → Gửi Email.
 """
 import difflib
 import gzip
@@ -995,7 +995,7 @@ def main():
     tier2 = tier2[:60]  # cap 60 bài — rate limiter _gemini_wait() giữ đúng 15 RPM
 
     if not tier2:
-        send_telegram("⚠️ Hôm nay không có bài nào qua filter.")
+        print("⚠️ Hôm nay không có bài nào qua filter.")
         return
 
     # Tier 3: Gemini score (2 workers, delay 2s — tránh 429)
