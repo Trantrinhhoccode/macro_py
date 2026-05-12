@@ -308,6 +308,39 @@ def collect_bloomberg() -> list[dict]:
     return articles
 
 
+def collect_project_syndicate() -> list[dict]:
+    """Lấy bài từ Project Syndicate RSS — opinion từ economists/thought leaders, không paywall."""
+    from email.utils import parsedate_to_datetime
+    xml = fetch("https://www.project-syndicate.org/rss")
+    if not xml:
+        return []
+    articles: list[dict] = []
+    for item in re.findall(r"<item>(.*?)</item>", xml, re.DOTALL):
+        tm = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>", item) or \
+             re.search(r"<title>(.*?)</title>", item)
+        dm = re.search(r"<description><!\[CDATA\[(.*?)\]\]></description>", item) or \
+             re.search(r"<description>(.*?)</description>", item)
+        lm = re.search(r"<link>(https?://[^<]+)</link>", item) or \
+             re.search(r"<guid[^>]*>(https?://[^<]+)</guid>", item)
+        pm = re.search(r"<pubDate>(.*?)</pubDate>", item)
+        if not (tm and lm):
+            continue
+        title = re.sub(r"<!\[CDATA\[|\]\]>", "", tm.group(1)).strip()
+        desc  = re.sub(r"<[^>]+>", "", dm.group(1) if dm else "").strip()
+        url   = lm.group(1).strip()
+        pub   = pm.group(1).strip() if pm else ""
+        if pub:
+            try:
+                pub_dt = parsedate_to_datetime(pub)
+                age_h = (datetime.now(timezone.utc) - pub_dt.astimezone(timezone.utc)).total_seconds() / 3600
+                if age_h > _MAX_AGE_HOURS:
+                    continue
+            except Exception:
+                pass
+        articles.append({"title": title, "description": desc[:300], "url": url, "pub_date": pub})
+    return articles
+
+
 def score_bloomberg(art: dict) -> dict | None:
     """Score Bloomberg article dựa trên title + description (không cần full text)."""
     prompt = _BLOOMBERG_SCORE_PROMPT.format(
@@ -993,6 +1026,34 @@ def main():
             print("  Bloomberg: không có bài nào đủ điểm")
     except Exception as e:
         print(f"  ⚠️  Bloomberg lỗi: {e}")
+
+    # Project Syndicate — opinion từ economists/thought leaders
+    print("  Đang lấy Project Syndicate...")
+    try:
+        ps_arts = collect_project_syndicate()
+        print(f"    → {len(ps_arts)} bài từ Project Syndicate RSS")
+        ps_scored = []
+        for a in ps_arts:
+            s = score_bloomberg(a)   # dùng chung prompt score
+            if s and s["total"] >= 4:
+                ps_scored.append({**a, "score": s})
+        ps_scored.sort(key=lambda x: -x["score"]["total"])
+        ps_top = ps_scored[:3]
+        if ps_top:
+            ps_lines = ["\n\n🧠 **PROJECT SYNDICATE**\n"]
+            for a in ps_top:
+                summary = a["score"].get("summary", "").strip()
+                ps_lines.append(
+                    f"• **{a['title']}**\n"
+                    f"  {summary}\n"
+                    f"  [đọc bài]({a['url']})\n"
+                )
+            digest += "\n".join(ps_lines)
+            print(f"  Project Syndicate: {len(ps_top)} bài highlights")
+        else:
+            print("  Project Syndicate: không có bài nào đủ điểm")
+    except Exception as e:
+        print(f"  ⚠️  Project Syndicate lỗi: {e}")
 
     # Polymarket — ghép vào cuối digest
     print("  Đang lấy dữ liệu Polymarket...")
