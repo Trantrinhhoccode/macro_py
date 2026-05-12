@@ -835,12 +835,14 @@ def _ps_fulltext_html(articles: list[dict]) -> str:
         # Chia thành đoạn văn theo dấu chấm + khoảng trắng lớn
         paras = [p.strip() for p in re.split(r'\s{2,}', full_safe) if len(p.strip()) > 40]
         content = "".join(f"<p style='margin:0 0 10px'>{p}</p>" for p in paras)
+        art_url   = a["url"]
+        art_title = a["title"]
         blocks.append(
             f'<details style="margin:8px 0;border:1px solid #ddd;border-radius:6px;padding:8px 12px">'
             f'<summary style="cursor:pointer;font-weight:bold;color:#1a73e8">'
-            f'📄 {a["title"]}</summary>'
+            f'📄 {art_title}</summary>'
             f'<div style="margin-top:10px;font-size:13px;line-height:1.6;color:#333">{content}</div>'
-            f'<p style="margin-top:8px"><a href="{a[\"url\"]}">🔗 project-syndicate.org</a></p>'
+            f'<p style="margin-top:8px"><a href="{art_url}">🔗 project-syndicate.org</a></p>'
             f'</details>'
         )
     if not blocks:
