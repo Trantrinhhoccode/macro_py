@@ -308,8 +308,16 @@ def collect_bloomberg() -> list[dict]:
     return articles
 
 
+def _extract_ps_fulltext(html: str) -> str:
+    """Trích full text bài Project Syndicate từ HTML."""
+    # Lấy tất cả <p> trong body bài — PS không có JS paywall server-side
+    paras = re.findall(r"<p[^>]*>(.*?)</p>", html, re.DOTALL)
+    text = " ".join(re.sub(r"<[^>]+>", "", p).strip() for p in paras if len(p) > 80)
+    return text[:3000]   # Gemini context limit an toàn
+
+
 def collect_project_syndicate() -> list[dict]:
-    """Lấy bài từ Project Syndicate RSS — opinion từ economists/thought leaders, không paywall."""
+    """Lấy bài từ Project Syndicate RSS + fetch full text (không bị paywall server-side)."""
     from email.utils import parsedate_to_datetime
     xml = fetch("https://www.project-syndicate.org/rss")
     if not xml:
@@ -337,7 +345,17 @@ def collect_project_syndicate() -> list[dict]:
                     continue
             except Exception:
                 pass
-        articles.append({"title": title, "description": desc[:300], "url": url, "pub_date": pub})
+        # Fetch full text — PS bypass metered paywall vì không có cookie
+        full_text = ""
+        html_art = fetch(url)
+        if html_art:
+            full_text = _extract_ps_fulltext(html_art)
+        articles.append({
+            "title": title,
+            "description": full_text if full_text else desc[:300],
+            "url": url,
+            "pub_date": pub,
+        })
     return articles
 
 
@@ -784,7 +802,39 @@ def get_or_create_thread_id(sent: dict) -> str:
     return sent[THREAD_KEY]
 
 
-def send_email(markdown_text: str, thread_id: str) -> None:
+def _ps_fulltext_html(articles: list[dict]) -> str:
+    """Tạo HTML collapsible cho full text bài Project Syndicate."""
+    if not articles:
+        return ""
+    blocks = []
+    for a in articles:
+        full = a.get("description", "")
+        if not full:
+            continue
+        # Escape HTML entities
+        full_safe = full.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Chia thành đoạn văn theo dấu chấm + khoảng trắng lớn
+        paras = [p.strip() for p in re.split(r'\s{2,}', full_safe) if len(p.strip()) > 40]
+        content = "".join(f"<p style='margin:0 0 10px'>{p}</p>" for p in paras)
+        blocks.append(
+            f'<details style="margin:8px 0;border:1px solid #ddd;border-radius:6px;padding:8px 12px">'
+            f'<summary style="cursor:pointer;font-weight:bold;color:#1a73e8">'
+            f'📄 {a["title"]}</summary>'
+            f'<div style="margin-top:10px;font-size:13px;line-height:1.6;color:#333">{content}</div>'
+            f'<p style="margin-top:8px"><a href="{a[\"url\"]}">🔗 project-syndicate.org</a></p>'
+            f'</details>'
+        )
+    if not blocks:
+        return ""
+    return (
+        '<div style="margin-top:20px;padding:12px;background:#f8f9fa;border-radius:8px">'
+        '<b>🧠 PROJECT SYNDICATE — Full text (click để mở)</b><br><br>'
+        + "".join(blocks)
+        + '</div>'
+    )
+
+
+def send_email(markdown_text: str, thread_id: str, ps_articles: list | None = None) -> None:
     if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
         print("  ⚠️  Bỏ qua gửi email: chưa cấu hình EMAIL_SENDER / EMAIL_APP_PASSWORD / EMAIL_RECIPIENT")
         return
@@ -823,6 +873,7 @@ def send_email(markdown_text: str, thread_id: str) -> None:
   <div class="card">
     <div class="timestamp">🕐 {today} · {hour} (GMT+7)</div>
     {body_html.replace(chr(10), '<br>')}
+    {_ps_fulltext_html(ps_articles or [])}
     <div class="footer">TApro Daily Digest · Powered by Gemini AI</div>
   </div>
 </body>
@@ -1046,13 +1097,15 @@ def main():
                 ps_lines.append(
                     f"• **{a['title']}**\n"
                     f"  {summary}\n"
-                    f"  [đọc bài]({a['url']})\n"
+                    f"  [project-syndicate.org]({a['url']})\n"
                 )
             digest += "\n".join(ps_lines)
-            print(f"  Project Syndicate: {len(ps_top)} bài highlights")
+            print(f"  Project Syndicate: {len(ps_top)} bài highlights (full text đính kèm trong email)")
         else:
+            ps_top = []
             print("  Project Syndicate: không có bài nào đủ điểm")
     except Exception as e:
+        ps_top = []
         print(f"  ⚠️  Project Syndicate lỗi: {e}")
 
     # Polymarket — ghép vào cuối digest
@@ -1081,7 +1134,7 @@ def main():
 
     # Gửi Email
     try:
-        send_email(digest, thread_id)
+        send_email(digest, thread_id, ps_articles=ps_top)
     except Exception as e:
         print(f"  ❌ Email thất bại: {e}")
 
