@@ -241,6 +241,100 @@ def collect_bbw() -> list[str]:
 
 
 # ─── Tier 2: fetch + filter ────────────────────────────────────────────────────
+# ─── Bloomberg via official RSS feeds ────────────────────────────────────────
+_BLOOMBERG_RSS_FEEDS = [
+    "https://feeds.bloomberg.com/markets/news.rss",
+    "https://feeds.bloomberg.com/economics/news.rss",
+    "https://feeds.bloomberg.com/politics/news.rss",
+]
+_BLOOMBERG_SCORE_PROMPT = """Chấm điểm bài báo Bloomberg cho nhà đầu tư chứng khoán Việt Nam.
+TIÊU ĐỀ: {title}
+MÔ TẢ: {desc}
+
+Chấm 0-3 mỗi tiêu chí:
+- impact: vĩ mô lớn(3)|ngành(2)|doanh nghiệp(1)|nhỏ(0)
+- actionable: thúc đẩy đầu tư(3)|có ích(2)|tham khảo(1)|giải trí(0)
+
+CHỈ trả về JSON:
+{{"impact":N,"actionable":N,"summary":"1 câu tóm tắt tiếng Việt"}}"""
+
+
+def collect_bloomberg() -> list[dict]:
+    """Lấy Bloomberg headlines qua official RSS feeds — trả về link bloomberg.com thật."""
+    from email.utils import parsedate_to_datetime
+    seen: set[str] = set()
+    articles: list[dict] = []
+
+    for feed_url in _BLOOMBERG_RSS_FEEDS:
+        xml = fetch(feed_url)
+        if not xml:
+            continue
+        for item in re.findall(r"<item>(.*?)</item>", xml, re.DOTALL):
+            tm = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>", item) or \
+                 re.search(r"<title>(.*?)</title>", item)
+            dm = re.search(r"<description><!\[CDATA\[(.*?)\]\]></description>", item) or \
+                 re.search(r"<description>(.*?)</description>", item)
+            lm = re.search(r"<link>(https?://[^<]+)</link>", item) or \
+                 re.search(r"<guid[^>]*>(https?://[^<]+)</guid>", item)
+            pm = re.search(r"<pubDate>(.*?)</pubDate>", item)
+
+            if not (tm and lm):
+                continue
+            url = lm.group(1).strip()
+            if url in seen:
+                continue
+            # Bỏ video clips — chỉ lấy bài viết
+            if "/news/videos/" in url:
+                continue
+            seen.add(url)
+
+            title = re.sub(r"<!\[CDATA\[|\]\]>", "", tm.group(1)).strip()
+            desc  = re.sub(r"<[^>]+>", "", dm.group(1)).strip() if dm else ""
+            desc  = re.sub(r"<!\[CDATA\[|\]\]>", "", desc).strip()
+            pub   = pm.group(1).strip() if pm else ""
+
+            # Lọc bài quá cũ
+            if pub:
+                try:
+                    pub_dt = parsedate_to_datetime(pub)
+                    age_h = (datetime.now(timezone.utc) - pub_dt.astimezone(timezone.utc)).total_seconds() / 3600
+                    if age_h > _MAX_AGE_HOURS:
+                        continue
+                except Exception:
+                    pass
+
+            articles.append({"title": title, "description": desc, "url": url, "pub_date": pub})
+    return articles
+
+
+def score_bloomberg(art: dict) -> dict | None:
+    """Score Bloomberg article dựa trên title + description (không cần full text)."""
+    prompt = _BLOOMBERG_SCORE_PROMPT.format(
+        title=art["title"], desc=art["description"][:300]
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    payload = {"contents": [{"parts": [{"text": prompt}]}],
+               "generationConfig": {"temperature": 0.1, "maxOutputTokens": 150}}
+    for attempt in range(3):
+        try:
+            _gemini_wait()
+            r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=20)
+            if r.status_code == 429:
+                time.sleep(20 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            text = re.sub(r"```(?:json)?", "", text).replace("```", "").strip()
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if m:
+                s = json.loads(m.group())
+                s["total"] = s.get("impact", 0) + s.get("actionable", 0)
+                return s
+        except Exception:
+            time.sleep(2)
+    return None
+
+
 def _parse_pub_age_hours(pub_date: str) -> float | None:
     """Tính số giờ kể từ khi bài đăng. Trả None nếu không parse được."""
     if not pub_date:
@@ -865,6 +959,36 @@ def main():
             digest = digest[:split_marker].rstrip() + ref_block + "\n\n" + digest[split_marker:]
         else:
             digest += ref_block  # fallback: nếu không tìm thấy thì append cuối
+
+    # Bloomberg Highlights — score bằng title + description, không cần full text
+    print("  Đang lấy Bloomberg highlights...")
+    try:
+        bloomberg_arts = collect_bloomberg()
+        print(f"    → {len(bloomberg_arts)} bài từ Google News RSS")
+        bloomberg_scored = []
+        for a in bloomberg_arts[:20]:   # score tối đa 20 bài
+            s = score_bloomberg(a)
+            if s and s["total"] >= 4:   # ngưỡng 4/6 (impact + actionable)
+                bloomberg_scored.append({**a, "score": s})
+        bloomberg_scored.sort(key=lambda x: -x["score"]["total"])
+        bloomberg_top = bloomberg_scored[:5]
+
+        if bloomberg_top:
+            blm_lines = ["\n\n🌐 **BLOOMBERG HIGHLIGHTS**\n"]
+            for a in bloomberg_top:
+                summary = a["score"].get("summary", "").strip()
+                archive_url = f"https://archive.ph/newest/{a['url']}"
+                blm_lines.append(
+                    f"• **{a['title']}**\n"
+                    f"  {summary}\n"
+                    f"  [đọc bài]({archive_url})\n"
+                )
+            digest += "\n".join(blm_lines)
+            print(f"  Bloomberg: {len(bloomberg_top)} bài highlights")
+        else:
+            print("  Bloomberg: không có bài nào đủ điểm")
+    except Exception as e:
+        print(f"  ⚠️  Bloomberg lỗi: {e}")
 
     # Polymarket — ghép vào cuối digest
     print("  Đang lấy dữ liệu Polymarket...")
