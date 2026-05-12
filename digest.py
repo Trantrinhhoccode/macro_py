@@ -317,45 +317,63 @@ def _extract_ps_fulltext(html: str) -> str:
 
 
 def collect_project_syndicate() -> list[dict]:
-    """Lấy bài từ Project Syndicate RSS + fetch full text (không bị paywall server-side)."""
-    from email.utils import parsedate_to_datetime
-    xml = fetch("https://www.project-syndicate.org/rss")
-    if not xml:
+    """Lấy 3-5 bài nổi bật từ homepage Project Syndicate (section đầu tiên — editorial picks).
+    Không dùng RSS vì RSS trả về 20 bài mới nhất, không phải editorial picks.
+    PS không có server-side paywall → fetch full text trực tiếp."""
+    PS_BASE = "https://www.project-syndicate.org"
+    html_home = fetch(PS_BASE)
+    if not html_home:
         return []
+
+    # Lấy tất cả link /commentary/ theo thứ tự xuất hiện trên homepage (editorial picks đầu tiên)
+    seen_slugs: set[str] = set()
+    ordered_paths: list[str] = []
+    for path in re.findall(r'href="(/commentary/[a-z0-9][a-z0-9\-]*(?:/[a-z]{2})?)"', html_home):
+        # Chuẩn hoá: bỏ phần /en hoặc /vi ở cuối nếu có
+        slug = re.sub(r"/[a-z]{2}$", "", path)
+        if slug not in seen_slugs:
+            seen_slugs.add(slug)
+            ordered_paths.append(slug)
+        if len(ordered_paths) >= 5:
+            break
+
     articles: list[dict] = []
-    for item in re.findall(r"<item>(.*?)</item>", xml, re.DOTALL):
-        tm = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>", item) or \
-             re.search(r"<title>(.*?)</title>", item)
-        dm = re.search(r"<description><!\[CDATA\[(.*?)\]\]></description>", item) or \
-             re.search(r"<description>(.*?)</description>", item)
-        lm = re.search(r"<link>(https?://[^<]+)</link>", item) or \
-             re.search(r"<guid[^>]*>(https?://[^<]+)</guid>", item)
-        pm = re.search(r"<pubDate>(.*?)</pubDate>", item)
-        if not (tm and lm):
-            continue
-        title = re.sub(r"<!\[CDATA\[|\]\]>", "", tm.group(1)).strip()
-        desc  = re.sub(r"<[^>]+>", "", dm.group(1) if dm else "").strip()
-        url   = lm.group(1).strip()
-        pub   = pm.group(1).strip() if pm else ""
-        if pub:
-            try:
-                pub_dt = parsedate_to_datetime(pub)
-                age_h = (datetime.now(timezone.utc) - pub_dt.astimezone(timezone.utc)).total_seconds() / 3600
-                if age_h > _MAX_AGE_HOURS:
-                    continue
-            except Exception:
-                pass
-        # Fetch full text — PS bypass metered paywall vì không có cookie
-        full_text = ""
+    for path in ordered_paths:
+        url = PS_BASE + path
         html_art = fetch(url)
-        if html_art:
-            full_text = _extract_ps_fulltext(html_art)
+        if not html_art:
+            continue
+
+        # Lấy tiêu đề từ <title> hoặc <h1>
+        title = ""
+        m_title = re.search(r'<meta property="og:title"[^>]+content="([^"]+)"', html_art)
+        if m_title:
+            title = m_title.group(1).strip()
+        if not title:
+            m_h1 = re.search(r"<h1[^>]*>(.*?)</h1>", html_art, re.DOTALL)
+            if m_h1:
+                title = re.sub(r"<[^>]+>", "", m_h1.group(1)).strip()
+        if not title:
+            m_t = re.search(r"<title[^>]*>([^<]+)</title>", html_art)
+            if m_t:
+                title = m_t.group(1).split("|")[0].strip()
+        if not title:
+            continue
+
+        # Lấy ngày đăng từ meta
+        pub = ""
+        m_pub = re.search(r'"datePublished"\s*:\s*"([^"]+)"', html_art[:15000])
+        if m_pub:
+            pub = m_pub.group(1)
+
+        full_text = _extract_ps_fulltext(html_art)
         articles.append({
             "title": title,
-            "description": full_text if full_text else desc[:300],
+            "description": full_text if full_text else "",
             "url": url,
             "pub_date": pub,
         })
+
     return articles
 
 
@@ -1082,7 +1100,7 @@ def main():
     print("  Đang lấy Project Syndicate...")
     try:
         ps_arts = collect_project_syndicate()
-        print(f"    → {len(ps_arts)} bài từ Project Syndicate RSS")
+        print(f"    → {len(ps_arts)} bài từ Project Syndicate homepage (editorial picks)")
         ps_scored = []
         for a in ps_arts:
             s = score_bloomberg(a)   # dùng chung prompt score
