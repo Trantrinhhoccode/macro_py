@@ -336,6 +336,7 @@ def score_bloomberg(art: dict) -> dict | None:
     return None
 
 
+
 def _parse_pub_age_hours(pub_date: str) -> float | None:
     """Tính số giờ kể từ khi bài đăng. Trả None nếu không parse được."""
     if not pub_date:
@@ -984,7 +985,7 @@ def main():
                 blm_lines.append(
                     f"• **{a['title']}**  _{label}_\n"
                     f"  {summary}\n"
-                    f"  [đọc bài]({archive_url})\n"
+                    f"  [archive.ph]({archive_url})\n"
                 )
             digest += "\n".join(blm_lines)
             print(f"  Bloomberg: {len(bloomberg_top)} bài highlights ({sum(1 for a in bloomberg_top if '/opinion/' in a['url'])} opinion)")
