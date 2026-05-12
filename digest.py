@@ -246,6 +246,7 @@ _BLOOMBERG_RSS_FEEDS = [
     "https://feeds.bloomberg.com/markets/news.rss",
     "https://feeds.bloomberg.com/economics/news.rss",
     "https://feeds.bloomberg.com/politics/news.rss",
+    "https://feeds.bloomberg.com/bview/news.rss",      # Bloomberg Opinion
 ]
 _BLOOMBERG_SCORE_PROMPT = """Chấm điểm bài báo Bloomberg cho nhà đầu tư chứng khoán Việt Nam.
 TIÊU ĐỀ: {title}
@@ -964,9 +965,9 @@ def main():
     print("  Đang lấy Bloomberg highlights...")
     try:
         bloomberg_arts = collect_bloomberg()
-        print(f"    → {len(bloomberg_arts)} bài từ Google News RSS")
+        print(f"    → {len(bloomberg_arts)} bài từ Bloomberg RSS (markets/economics/politics/opinion)")
         bloomberg_scored = []
-        for a in bloomberg_arts[:20]:   # score tối đa 20 bài
+        for a in bloomberg_arts:   # score toàn bộ bài
             s = score_bloomberg(a)
             if s and s["total"] >= 4:   # ngưỡng 4/6 (impact + actionable)
                 bloomberg_scored.append({**a, "score": s})
@@ -977,14 +978,16 @@ def main():
             blm_lines = ["\n\n🌐 **BLOOMBERG HIGHLIGHTS**\n"]
             for a in bloomberg_top:
                 summary = a["score"].get("summary", "").strip()
+                is_opinion = "/opinion/" in a["url"]
+                label = "Opinion" if is_opinion else "Bloomberg"
                 archive_url = f"https://archive.ph/newest/{a['url']}"
                 blm_lines.append(
-                    f"• **{a['title']}**\n"
+                    f"• **{a['title']}**  _{label}_\n"
                     f"  {summary}\n"
                     f"  [đọc bài]({archive_url})\n"
                 )
             digest += "\n".join(blm_lines)
-            print(f"  Bloomberg: {len(bloomberg_top)} bài highlights")
+            print(f"  Bloomberg: {len(bloomberg_top)} bài highlights ({sum(1 for a in bloomberg_top if '/opinion/' in a['url'])} opinion)")
         else:
             print("  Bloomberg: không có bài nào đủ điểm")
     except Exception as e:
