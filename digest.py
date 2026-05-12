@@ -249,6 +249,7 @@ _BLOOMBERG_RSS_FEEDS = [
     "https://feeds.bloomberg.com/bview/news.rss",      # Bloomberg Opinion
 ]
 _BLOOMBERG_MAX_AGE_HOURS = 24   # chỉ lấy Bloomberg trong 24h — giảm Gemini calls
+_BLOOMBERG_PER_FEED      = 5    # lấy tối đa 5 bài mới nhất mỗi feed (feed đã sorted mới→cũ)
 _BLOOMBERG_SCORE_PROMPT = """Chấm điểm bài báo Bloomberg cho nhà đầu tư chứng khoán Việt Nam.
 TIÊU ĐỀ: {title}
 MÔ TẢ: {desc}
@@ -271,7 +272,10 @@ def collect_bloomberg() -> list[dict]:
         xml = fetch(feed_url)
         if not xml:
             continue
+        feed_count = 0
         for item in re.findall(r"<item>(.*?)</item>", xml, re.DOTALL):
+            if feed_count >= _BLOOMBERG_PER_FEED:
+                break
             tm = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>", item) or \
                  re.search(r"<title>(.*?)</title>", item)
             dm = re.search(r"<description><!\[CDATA\[(.*?)\]\]></description>", item) or \
@@ -306,6 +310,7 @@ def collect_bloomberg() -> list[dict]:
                     pass
 
             articles.append({"title": title, "description": desc, "url": url, "pub_date": pub})
+            feed_count += 1
     return articles
 
 
