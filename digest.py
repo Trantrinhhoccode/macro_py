@@ -315,11 +315,24 @@ def collect_bloomberg() -> list[dict]:
 
 
 def _extract_ps_fulltext(html: str) -> str:
-    """Trích full text bài Project Syndicate từ HTML."""
-    # Lấy tất cả <p> trong body bài — PS không có JS paywall server-side
+    """Trích full text bài Project Syndicate từ HTML.
+    Filter bỏ các <p> chứa JSON config (Stripe/PayPal keys, API keys...).
+    """
     paras = re.findall(r"<p[^>]*>(.*?)</p>", html, re.DOTALL)
-    text = " ".join(re.sub(r"<[^>]+>", "", p).strip() for p in paras if len(p) > 80)
-    return text[:3000]   # Gemini context limit an toàn
+    clean = []
+    for p in paras:
+        text = re.sub(r"<[^>]+>", "", p).strip()
+        if len(text) < 80:
+            continue
+        # Bỏ JSON/config blocks: "key": "value" hoặc "key": { ...
+        if re.search(r'"\w+"\s*:\s*["\[{]', text):
+            continue
+        # Bỏ đoạn có tỷ lệ chữ cái quá thấp (code, config, URLs...)
+        alpha = sum(c.isalpha() or c.isspace() for c in text) / len(text)
+        if alpha < 0.65:
+            continue
+        clean.append(text)
+    return " ".join(clean)[:3000]
 
 
 def collect_project_syndicate() -> list[dict]:
