@@ -248,6 +248,7 @@ _BLOOMBERG_RSS_FEEDS = [
     "https://feeds.bloomberg.com/politics/news.rss",
     "https://feeds.bloomberg.com/bview/news.rss",      # Bloomberg Opinion
 ]
+_BLOOMBERG_MAX_AGE_HOURS = 24   # chỉ lấy Bloomberg trong 24h — giảm Gemini calls
 _BLOOMBERG_SCORE_PROMPT = """Chấm điểm bài báo Bloomberg cho nhà đầu tư chứng khoán Việt Nam.
 TIÊU ĐỀ: {title}
 MÔ TẢ: {desc}
@@ -299,7 +300,7 @@ def collect_bloomberg() -> list[dict]:
                 try:
                     pub_dt = parsedate_to_datetime(pub)
                     age_h = (datetime.now(timezone.utc) - pub_dt.astimezone(timezone.utc)).total_seconds() / 3600
-                    if age_h > _MAX_AGE_HOURS:
+                    if age_h > _BLOOMBERG_MAX_AGE_HOURS:
                         continue
                 except Exception:
                     pass
