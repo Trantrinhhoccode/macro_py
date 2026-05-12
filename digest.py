@@ -314,31 +314,11 @@ def collect_bloomberg() -> list[dict]:
     return articles
 
 
-def _extract_ps_fulltext(html: str) -> str:
-    """Trích full text bài Project Syndicate từ HTML.
-    Filter bỏ các <p> chứa JSON config (Stripe/PayPal keys, API keys...).
-    """
-    paras = re.findall(r"<p[^>]*>(.*?)</p>", html, re.DOTALL)
-    clean = []
-    for p in paras:
-        text = re.sub(r"<[^>]+>", "", p).strip()
-        if len(text) < 80:
-            continue
-        # Bỏ JSON/config blocks: "key": "value" hoặc "key": { ...
-        if re.search(r'"\w+"\s*:\s*["\[{]', text):
-            continue
-        # Bỏ đoạn có tỷ lệ chữ cái quá thấp (code, config, URLs...)
-        alpha = sum(c.isalpha() or c.isspace() for c in text) / len(text)
-        if alpha < 0.65:
-            continue
-        clean.append(text)
-    return " ".join(clean)[:3000]
 
 
 def collect_project_syndicate() -> list[dict]:
     """Lấy 3-5 bài nổi bật từ homepage Project Syndicate (section đầu tiên — editorial picks).
-    Không dùng RSS vì RSS trả về 20 bài mới nhất, không phải editorial picks.
-    PS không có server-side paywall → fetch full text trực tiếp."""
+    Dùng og:description làm description cho Gemini scoring (PS paywall chặn sau đoạn đầu)."""
     PS_BASE = "https://www.project-syndicate.org"
     html_home = fetch(PS_BASE)
     if not html_home:
@@ -379,16 +359,21 @@ def collect_project_syndicate() -> list[dict]:
         if not title:
             continue
 
+        # Lấy description từ og:description (intro paragraph — đủ cho Gemini scoring)
+        desc = ""
+        m_desc = re.search(r'<meta property="og:description"[^>]+content="([^"]+)"', html_art)
+        if m_desc:
+            desc = m_desc.group(1).strip()
+
         # Lấy ngày đăng từ meta
         pub = ""
         m_pub = re.search(r'"datePublished"\s*:\s*"([^"]+)"', html_art[:15000])
         if m_pub:
             pub = m_pub.group(1)
 
-        full_text = _extract_ps_fulltext(html_art)
         articles.append({
             "title": title,
-            "description": full_text if full_text else "",
+            "description": desc,
             "url": url,
             "pub_date": pub,
         })
@@ -839,41 +824,9 @@ def get_or_create_thread_id(sent: dict) -> str:
     return sent[THREAD_KEY]
 
 
-def _ps_fulltext_html(articles: list[dict]) -> str:
-    """Tạo HTML collapsible cho full text bài Project Syndicate."""
-    if not articles:
-        return ""
-    blocks = []
-    for a in articles:
-        full = a.get("description", "")
-        if not full:
-            continue
-        # Escape HTML entities
-        full_safe = full.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        # Chia thành đoạn văn theo dấu chấm + khoảng trắng lớn
-        paras = [p.strip() for p in re.split(r'\s{2,}', full_safe) if len(p.strip()) > 40]
-        content = "".join(f"<p style='margin:0 0 10px'>{p}</p>" for p in paras)
-        art_url   = a["url"]
-        art_title = a["title"]
-        blocks.append(
-            f'<details style="margin:8px 0;border:1px solid #ddd;border-radius:6px;padding:8px 12px">'
-            f'<summary style="cursor:pointer;font-weight:bold;color:#1a73e8">'
-            f'📄 {art_title}</summary>'
-            f'<div style="margin-top:10px;font-size:13px;line-height:1.6;color:#333">{content}</div>'
-            f'<p style="margin-top:8px"><a href="{art_url}">🔗 project-syndicate.org</a></p>'
-            f'</details>'
-        )
-    if not blocks:
-        return ""
-    return (
-        '<div style="margin-top:20px;padding:12px;background:#f8f9fa;border-radius:8px">'
-        '<b>🧠 PROJECT SYNDICATE — Full text (click để mở)</b><br><br>'
-        + "".join(blocks)
-        + '</div>'
-    )
 
 
-def send_email(markdown_text: str, thread_id: str, ps_articles: list | None = None) -> None:
+def send_email(markdown_text: str, thread_id: str) -> None:
     if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
         print("  ⚠️  Bỏ qua gửi email: chưa cấu hình EMAIL_SENDER / EMAIL_APP_PASSWORD / EMAIL_RECIPIENT")
         return
@@ -912,7 +865,6 @@ def send_email(markdown_text: str, thread_id: str, ps_articles: list | None = No
   <div class="card">
     <div class="timestamp">🕐 {today} · {hour} (GMT+7)</div>
     {body_html.replace(chr(10), '<br>')}
-    {_ps_fulltext_html(ps_articles or [])}
     <div class="footer">TApro Daily Digest · Powered by Gemini AI</div>
   </div>
 </body>
@@ -1133,13 +1085,14 @@ def main():
             ps_lines = ["\n\n🧠 **PROJECT SYNDICATE**\n"]
             for a in ps_top:
                 summary = a["score"].get("summary", "").strip()
+                archive_url = f"https://archive.ph/newest/{a['url']}"
                 ps_lines.append(
                     f"• **{a['title']}**\n"
                     f"  {summary}\n"
-                    f"  [project-syndicate.org]({a['url']})\n"
+                    f"  [archive.ph]({archive_url})\n"
                 )
             digest += "\n".join(ps_lines)
-            print(f"  Project Syndicate: {len(ps_top)} bài highlights (full text đính kèm trong email)")
+            print(f"  Project Syndicate: {len(ps_top)} bài highlights")
         else:
             ps_top = []
             print("  Project Syndicate: không có bài nào đủ điểm")
@@ -1173,7 +1126,7 @@ def main():
 
     # Gửi Email
     try:
-        send_email(digest, thread_id, ps_articles=ps_top)
+        send_email(digest, thread_id)
     except Exception as e:
         print(f"  ❌ Email thất bại: {e}")
 
