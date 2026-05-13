@@ -255,11 +255,17 @@ TIÊU ĐỀ: {title}
 MÔ TẢ: {desc}
 
 Chấm 0-3 mỗi tiêu chí:
-- impact: vĩ mô lớn(3)|ngành(2)|doanh nghiệp(1)|nhỏ(0)
-- actionable: thúc đẩy đầu tư(3)|có ích(2)|tham khảo(1)|giải trí(0)
+- insight: góc nhìn sâu/khác biệt(3)|có phân tích(2)|tin thông thường(1)|hời hợt(0)
+- human_relevance: kinh tế/vĩ mô/chính trị/triết học/tâm lý/giáo dục/xã hội/văn hóa có chiều sâu(3)|tác động đời sống hoặc tư duy đầu tư(2)|thị trường thuần túy(1)|nhiễu(0)
+- timeless_value: đáng đọc sau nhiều ngày(3)|còn giá trị ngắn hạn(2)|chỉ cập nhật tức thời(1)|không đáng lưu(0)
+
+Ưu tiên bài có góc nhìn về kinh tế/vĩ mô, chính trị, triết học đời sống, tâm lý học,
+giáo dục/nuôi dạy con, văn hóa, xã hội, AI và tương lai con người. Bài kinh tế được điểm cao
+nếu giúp hiểu chu kỳ, chính sách, hành vi con người, cấu trúc xã hội hoặc xu hướng dài hạn.
+Hạ điểm các bài chỉ nói biến động giá, earnings, giao dịch ngắn hạn, hoặc tin thị trường không có chiều sâu.
 
 CHỈ trả về JSON:
-{{"impact":N,"actionable":N,"summary":"1 câu tóm tắt tiếng Việt"}}"""
+{{"insight":N,"human_relevance":N,"timeless_value":N,"topic":"Kinh tế|Vĩ mô|Chính trị|Triết học|Tâm lý|Giáo dục|Văn hóa|Xã hội|AI|Thị trường|Khác","summary":"1 câu tóm tắt tiếng Việt, nhấn vào góc nhìn đáng đọc"}}"""
 
 
 def collect_bloomberg() -> list[dict]:
@@ -382,7 +388,7 @@ def collect_project_syndicate() -> list[dict]:
 
 
 def score_bloomberg(art: dict) -> dict | None:
-    """Score Bloomberg article dựa trên title + description (không cần full text)."""
+    """Score Bloomberg/Project Syndicate article dựa trên title + description."""
     prompt = _BLOOMBERG_SCORE_PROMPT.format(
         title=art["title"], desc=art["description"][:300]
     )
@@ -402,7 +408,7 @@ def score_bloomberg(art: dict) -> dict | None:
             m = re.search(r"\{.*\}", text, re.DOTALL)
             if m:
                 s = json.loads(m.group())
-                s["total"] = s.get("impact", 0) + s.get("actionable", 0)
+                s["total"] = sum(s.get(k, 0) for k in ("insight", "human_relevance", "timeless_value"))
                 return s
         except Exception:
             time.sleep(2)
@@ -581,15 +587,15 @@ CẤU TRÚC OUTPUT:
     for attempt in range(3):
         _gemini_wait()
         r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=90)
-        if r.status_code == 429:
+        if r.status_code in (429, 500, 502, 503, 504):
             wait = 30 * (attempt + 1)
-            print(f"  build_digest 429 — chờ {wait}s (lần {attempt+1}/3)...")
+            print(f"  build_digest HTTP {r.status_code} — chờ {wait}s (lần {attempt+1}/3)...")
             time.sleep(wait)
             continue
         r.raise_for_status()
         break
     else:
-        raise RuntimeError("build_digest: vẫn bị 429 sau 3 lần thử")
+        raise RuntimeError(f"build_digest: Gemini vẫn lỗi HTTP {r.status_code} sau 3 lần thử")
 
     text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -1037,7 +1043,7 @@ def main():
         else:
             digest += ref_block  # fallback: nếu không tìm thấy thì append cuối
 
-    # Bloomberg Highlights — score bằng title + description, không cần full text
+    # Bloomberg Highlights — score bằng title + description theo tiêu chí góc nhìn/độ sâu
     print("  Đang lấy Bloomberg highlights...")
     try:
         bloomberg_arts = collect_bloomberg()
@@ -1045,7 +1051,7 @@ def main():
         bloomberg_scored = []
         for a in bloomberg_arts:   # score toàn bộ bài
             s = score_bloomberg(a)
-            if s and s["total"] >= 4:   # ngưỡng 4/6 (impact + actionable)
+            if s and s["total"] >= 6:   # ngưỡng 6/9 (insight + human_relevance + timeless_value)
                 bloomberg_scored.append({**a, "score": s})
         bloomberg_scored.sort(key=lambda x: -x["score"]["total"])
         bloomberg_top = bloomberg_scored[:5]
@@ -1055,7 +1061,10 @@ def main():
             for a in bloomberg_top:
                 summary = a["score"].get("summary", "").strip()
                 is_opinion = "/opinion/" in a["url"]
+                topic = a["score"].get("topic", "").strip()
                 label = "Opinion" if is_opinion else "Bloomberg"
+                if topic:
+                    label = f"{label} · {topic}"
                 archive_url = f"https://archive.ph/newest/{a['url']}"
                 blm_lines.append(
                     f"• **{a['title']}**  _{label}_\n"
@@ -1077,7 +1086,7 @@ def main():
         ps_scored = []
         for a in ps_arts:
             s = score_bloomberg(a)   # dùng chung prompt score
-            if s and s["total"] >= 4:
+            if s and s["total"] >= 6:
                 ps_scored.append({**a, "score": s})
         ps_scored.sort(key=lambda x: -x["score"]["total"])
         ps_top = ps_scored[:3]
