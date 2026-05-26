@@ -480,13 +480,17 @@ def score(art: dict) -> dict | None:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}],
                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300}}
+    last_error = ""
     for attempt in range(3):
         try:
             _gemini_wait()   # global rate limiter: tối đa 1 req/4.1s
             r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=20)
             if r.status_code == 429:
+                last_error = "HTTP 429 rate limit"
                 time.sleep(20 * (attempt + 1))   # 20s, 40s, 60s
                 continue
+            if r.status_code >= 400:
+                last_error = f"HTTP {r.status_code}: {r.text[:180]}"
             r.raise_for_status()
             text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
             text = re.sub(r"```(?:json)?", "", text).replace("```", "").strip()
@@ -495,8 +499,12 @@ def score(art: dict) -> dict | None:
                 s = json.loads(m.group())
                 s["total"] = sum(s.get(k, 0) for k in ("depth", "impact", "novelty", "actionable"))
                 return s
-        except Exception:
+            last_error = f"không parse được JSON: {text[:180]}"
+        except Exception as e:
+            if not last_error:
+                last_error = repr(e)
             time.sleep(2)
+    print(f"  ⚠️  Score fail: {art.get('source', '?')} | {art.get('title', '')[:90]} | {last_error}")
     return None
 
 
@@ -1017,6 +1025,11 @@ def main():
             except Exception:
                 pass
     print(f"  Tier3: {len(scored)} bài scored ({time.time()-t0:.1f}s)")
+    if tier2 and not scored:
+        raise RuntimeError(
+            f"Tier3 scoring failed for all {len(tier2)} articles. "
+            "Kiểm tra log 'Score fail' phía trên, GEMINI_API_KEY, GEMINI_MODEL hoặc lỗi quota/API."
+        )
 
     # Dedup cross-source
     def title_key(t): return re.sub(r"[^\w\s]", "", t.lower())
