@@ -622,6 +622,30 @@ CẤU TRÚC OUTPUT:
     return text
 
 
+def build_fallback_digest(articles: list[dict], score_label: int) -> str:
+    """Tao email gon khi khong co bai dat nguong chinh nhung van co bai kha."""
+    today = now_vn().strftime("%d/%m/%Y")
+    lines = [
+        f"📊 **BẢN TIN RÚT GỌN — {today}**",
+        "",
+        f"Hôm nay chưa có bài nào đạt ngưỡng **{MIN_SCORE}** điểm, nhưng có {len(articles)} bài điểm **{score_label}** đáng tham khảo:",
+        "",
+    ]
+    for a in articles:
+        score_data = a.get("score", {})
+        topic = score_data.get("topic", "Khác")
+        mood = score_data.get("mood", "trung lập")
+        summary = score_data.get("summary", "").strip()
+        lines.extend([
+            f"**{a['title']}**",
+            f"Nguồn: {a['source']} | Chủ đề: {topic} | Mood: {mood}",
+            summary,
+            f"[đọc thêm]({a['url']})",
+            "",
+        ])
+    return "\n".join(lines).strip()
+
+
 # ─── Polymarket ───────────────────────────────────────────────────────────────
 # Nhóm anchor: (emoji, tên nhóm VN, danh sách keyword tìm trong question tiếng Anh)
 # Mỗi nhóm: keyword phải có MẶT, không_có danh sách keyword bị loại trừ
@@ -834,8 +858,7 @@ def get_or_create_thread_id(sent: dict) -> str:
 
 def send_email(markdown_text: str, thread_id: str) -> None:
     if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
-        print("  ⚠️  Bỏ qua gửi email: chưa cấu hình EMAIL_SENDER / EMAIL_APP_PASSWORD / EMAIL_RECIPIENT")
-        return
+        raise RuntimeError("Chưa cấu hình EMAIL_SENDER / EMAIL_APP_PASSWORD / EMAIL_RECIPIENT")
     try:
         today = now_vn().strftime("%d/%m/%Y")
         hour  = now_vn().strftime("%H:%M")
@@ -878,6 +901,8 @@ def send_email(markdown_text: str, thread_id: str) -> None:
 
         # Hỗ trợ nhiều email: EMAIL_RECIPIENT có thể là "a@gmail.com,b@gmail.com,..."
         recipients = [e.strip() for e in EMAIL_RECIPIENT.split(",") if e.strip()]
+        if not recipients:
+            raise RuntimeError("EMAIL_RECIPIENT không có địa chỉ hợp lệ")
 
         msg = MIMEMultipart("alternative")
         msg["Subject"]    = subject
@@ -895,6 +920,7 @@ def send_email(markdown_text: str, thread_id: str) -> None:
         print(f"  ✅ Đã gửi email → {len(recipients)} địa chỉ: {', '.join(recipients)}")
     except Exception as e:
         print(f"  ⚠️  Gửi email thất bại: {e}")
+        raise
 
 
 # ─── Dedup giữa các lần chạy ──────────────────────────────────────────────────
@@ -1010,16 +1036,21 @@ def main():
     refs = [a for a in final if a["score"]["total"] == MIN_SCORE - 1][:8]  # điểm 6
     print(f"  Top bài (>={MIN_SCORE} điểm): {len(top)} bài | Tham khảo: {len(refs)} bài")
 
+    using_refs_as_digest = False
     if not top:
-        print(f"  ⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE} điểm.")
-        return
-
-    # Tạo digest chính từ Gemini
-    print(f"  Đang tạo bản tin từ {len(top)} bài...")
-    digest = build_digest(top)
+        if not refs:
+            print(f"  ⚠️ Hôm nay không có bài nào đạt ≥{MIN_SCORE - 1} điểm để gửi.")
+            return
+        print(f"  ⚠️ Không có bài ≥{MIN_SCORE}; gửi bản tin rút gọn từ {len(refs)} bài điểm {MIN_SCORE - 1}.")
+        digest = build_fallback_digest(refs, MIN_SCORE - 1)
+        using_refs_as_digest = True
+    else:
+        # Tạo digest chính từ Gemini
+        print(f"  Đang tạo bản tin từ {len(top)} bài...")
+        digest = build_digest(top)
 
     # Gắn thêm phần Tin tham khảo — chèn TRƯỚC phần Rủi ro & Gợi ý
-    if refs:
+    if refs and not using_refs_as_digest:
         ref_lines = ["\n\n📎 **TIN THAM KHẢO**\n"]
         for a in refs:
             summary = a["score"].get("summary", "").strip()
@@ -1138,6 +1169,7 @@ def main():
         send_email(digest, thread_id)
     except Exception as e:
         print(f"  ❌ Email thất bại: {e}")
+        raise
 
     # Cập nhật danh sách URL đã gửi (cả top lẫn refs)
     now = time.time()
