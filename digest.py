@@ -204,9 +204,13 @@ def collect_vneconomy() -> list[str]:
 def collect_cafef() -> list[str]:
     html = fetch("https://cafef.vn/")
     if not html: return []
-    out: set[str] = set()
+    out: list[str] = []
+    seen: set[str] = set()
     for u in re.findall(r'href="(/[^"]*-\d{8,}\.chn)"', html):
-        out.add("https://cafef.vn" + u)
+        full = "https://cafef.vn" + u
+        if full not in seen:
+            out.append(full)
+            seen.add(full)
     SKIP = ["xon-xao","la-lung","ky-la","gay-soc","soc-","-nho-duoc","khien","phat-hien","tu-vong"]
     return [u for u in out if not any(k in u for k in SKIP)]
 
@@ -214,51 +218,71 @@ def collect_cafef() -> list[str]:
 def collect_sgt() -> list[str]:
     html = fetch("https://thesaigontimes.vn/")
     if not html: return []
-    out: set[str] = set()
+    out: list[str] = []
+    seen: set[str] = set()
     for u in re.findall(r'href="(https://thesaigontimes\.vn/[a-z0-9\-]+/)"', html):
         if "/category/" in u: continue
         if len(u.rstrip("/").split("/")[-1].split("-")) < 5: continue
-        out.add(u)
-    return list(out)
+        if u not in seen:
+            out.append(u)
+            seen.add(u)
+    return out
 
 
 def collect_ncdt() -> list[str]:
     html = fetch("https://nhipcaudautu.vn/")
     if not html: return []
-    out: set[str] = set()
+    out: list[str] = []
+    seen: set[str] = set()
     # URL bài mới có dạng: /<category>/<slug>-<id>/  (id 6+ chữ số)
     for u in re.findall(r'href="(/[a-z][a-z0-9\-]+/[a-z0-9\-]+-\d{6,}/?)"', html):
         if not any(s in u for s in ["/tag/", "/category/", "/author/"]):
-            out.add("https://nhipcaudautu.vn" + u)
+            full = "https://nhipcaudautu.vn" + u
+            if full not in seen:
+                out.append(full)
+                seen.add(full)
     # Pattern cũ phòng khi vẫn còn .html
     for u in re.findall(r'href="(https://nhipcaudautu\.vn/[^"]+\.html?)"', html):
         if not any(s in u for s in ["/tag/", "/category/", "/author/"]):
-            out.add(u)
-    return list(out)
+            if u not in seen:
+                out.append(u)
+                seen.add(u)
+    return out
 
 
 def collect_bdt() -> list[str]:
     html = fetch("https://baodautu.vn/")
     if not html: return []
-    out: set[str] = set()
+    out: list[str] = []
+    seen: set[str] = set()
+    skip = ["/tag/","/category/","/page/","/video.html","/rssMain.html","/multimedia.html"]
     for u in re.findall(r'href="(https://baodautu\.vn/[^"]+\.html?)"', html):
-        if not any(s in u for s in ["/tag/","/category/","/page/"]):
-            out.add(u)
+        if not any(s in u for s in skip) and u not in seen:
+            out.append(u)
+            seen.add(u)
     for u in re.findall(r'href="(/[a-z][^"]*\.html?)"', html):
-        if not any(s in u for s in ["/tag/","/category/","/page/"]):
-            out.add("https://baodautu.vn" + u)
-    return list(out)
+        full = "https://baodautu.vn" + u
+        if not any(s in u for s in skip) and full not in seen:
+            out.append(full)
+            seen.add(full)
+    return out
 
 
 def collect_bbw() -> list[str]:
     html = fetch("https://bbw.vn/")
     if not html: return []
-    out: set[str] = set()
+    out: list[str] = []
+    seen: set[str] = set()
     for u in re.findall(r'href="(https://bbw\.vn/[a-z0-9][a-z0-9\-]+-\d+\.html)"', html):
-        out.add(u)
+        if u not in seen:
+            out.append(u)
+            seen.add(u)
     for u in re.findall(r'href="(/[a-z0-9][a-z0-9\-]+-\d+\.html)"', html):
-        out.add("https://bbw.vn" + u)
-    return list(out)
+        full = "https://bbw.vn" + u
+        if full not in seen:
+            out.append(full)
+            seen.add(full)
+    return out
 
 
 # ─── Tier 2: fetch + filter ────────────────────────────────────────────────────
