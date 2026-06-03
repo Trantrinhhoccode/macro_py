@@ -702,16 +702,22 @@ def build_fallback_digest(articles: list[dict], score_label: int) -> str:
 
 
 INSIGHT_KEY = "_last_insight_sent_at_"
-INSIGHT_INTERVAL_HOURS = 48
-INSIGHT_LOOKBACK_HOURS = 48
-INSIGHT_MAX_ARTICLES = 35
+INSIGHT_LOOKBACK_HOURS = 24
+INSIGHT_MAX_ARTICLES = 60
+INSIGHT_MORNING_START_HOUR = 6
+INSIGHT_MORNING_END_HOUR = 8
 
 
 def should_send_insight(sent: dict) -> bool:
+    now = now_vn()
+    if not (INSIGHT_MORNING_START_HOUR <= now.hour < INSIGHT_MORNING_END_HOUR):
+        return False
+
     last = sent.get(INSIGHT_KEY)
     if not isinstance(last, (int, float)):
         return True
-    return time.time() - last >= INSIGHT_INTERVAL_HOURS * 3600
+    last_dt = datetime.fromtimestamp(last, VN_TZ)
+    return last_dt.date() != now.date()
 
 
 def collect_recent_articles_for_insight(sent: dict, current_articles: list[dict]) -> list[dict]:
@@ -765,7 +771,7 @@ def build_insight_section(articles: list[dict]) -> str:
         )
 
     prompt = f"""Bạn là người viết mục insight xuyên tin cho một bản tin kinh tế/chính trị/xã hội.
-Dưới đây là {len(articles)} bài đã xuất hiện trong 48 giờ gần nhất:
+Dưới đây là {len(articles)} bài đã xuất hiện trong 24 giờ gần nhất:
 
 {chr(10).join(article_lines)}
 
@@ -783,7 +789,7 @@ QUY TẮC BẮT BUỘC:
 
 FORMAT OUTPUT:
 
-🧭 **GÓC NHÌN 48H**
+🧭 **GÓC NHÌN 24H**
 
 Insight thú vị nhất: [1-2 câu luận điểm lớn].
 
@@ -818,192 +824,6 @@ Nguồn: {{{{LINK_1}}}}, {{{{LINK_2}}}}
         text = text.replace(f"{{{{LINK_{i}}}}}", f"[nguồn {i}]({article_url})")
     text = re.sub(r"\{\{LINK_\d+\}\}", "", text)
     return "\n\n" + text.strip()
-
-
-# ─── Polymarket ───────────────────────────────────────────────────────────────
-# Nhóm anchor: (emoji, tên nhóm VN, danh sách keyword tìm trong question tiếng Anh)
-# Mỗi nhóm: keyword phải có MẶT, không_có danh sách keyword bị loại trừ
-_POLY_ANCHOR_GROUPS = [
-    # (emoji, display, must_have_any, must_not_have_any)
-    ("🏦", "Fed / Lãi suất",
-        ["rate cut", "rate cuts", "no fed rate", "fed rate cut"],
-        ["increase interest", "raise interest"]),
-    ("📉", "Suy thoái Mỹ",
-        ["recession"],
-        []),
-    ("🛢",  "Iran & Hormuz",
-        ["hormuz", "iran peace", "iran deal", "us x iran"],
-        []),
-    ("🇹🇼", "Trung Quốc / Đài Loan",
-        ["china invade taiwan", "china blockade taiwan", "china x taiwan",
-         "china taiwan", "taiwan invasion"],
-        []),
-]
-
-# Loại bỏ các market không liên quan (thể thao, giải trí, chính trị xa)
-_POLY_EXCLUDE_KW = [
-    "2028", "fifa", "world cup", "nba", "nfl", "ufc", "mlb", "nhl",
-    "album", "jesus", "alien", "kardashian", "lebron", "rihanna", "carti",
-    "mrbeast", "clooney", "sanders", "warnock", "pence", "thune", "beto",
-    "cheney", "clinton", "walz", "obama", "trump jr", "eric trump",
-    "baseball", "basketball", "hockey", "soccer", "tennis", "golf",
-    "spread:", "o/u ", " vs. ",  # sports lines
-    "tweet", "post ", "elon musk post",
-]
-
-
-def _poly_bar(prob: float, width: int = 10) -> str:
-    filled = round(prob * width)
-    return "█" * filled + "░" * (width - filled)
-
-
-def _poly_parse_market(m: dict) -> dict | None:
-    """Trích xuất YES%, NO%, vol từ 1 market object. Trả None nếu không parse được."""
-    try:
-        outcomes = m.get("outcomes", "[]")
-        if isinstance(outcomes, str):
-            outcomes = json.loads(outcomes)
-        prices = m.get("outcomePrices", "[]")
-        if isinstance(prices, str):
-            prices = json.loads(prices)
-        if len(outcomes) != 2 or len(prices) != 2:
-            return None
-        yes_prob = float(prices[0])
-        return {
-            "question": m.get("question", ""),
-            "yes":   round(yes_prob * 100),
-            "no":    round((1 - yes_prob) * 100),
-            "vol":   m.get("volumeNum",  0) or 0,
-            "vol24": m.get("volume24hr", 0) or 0,
-        }
-    except Exception:
-        return None
-
-
-def _poly_is_junk(question: str) -> bool:
-    q = question.lower()
-    return any(kw in q for kw in _POLY_EXCLUDE_KW)
-
-
-def fetch_polymarket() -> dict:
-    """Fetch Polymarket: anchor markets + top-5 hot. Fetch 1 lần, filter client-side."""
-    result: dict = {"anchors": [], "hot": []}
-    base = "https://gamma-api.polymarket.com/markets"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        # ── Fetch 500 market theo tổng volume (1 request duy nhất) ───────────
-        r = requests.get(
-            base,
-            params={"limit": 500, "order": "volumeNum", "ascending": "false",
-                    "active": "true", "closed": "false"},
-            headers=headers, timeout=30,
-        )
-        if r.status_code != 200:
-            return result
-        all_markets = r.json()
-
-        # Parse tất cả thành dicts, lọc binary + junk
-        parsed_all: list[dict] = []
-        for m in all_markets:
-            if _poly_is_junk(m.get("question", "")):
-                continue
-            p = _poly_parse_market(m)
-            if p:
-                parsed_all.append(p)
-
-        # ── Anchor: với mỗi nhóm, lấy market khớp keyword, vol cao nhất, còn open ─
-        for emoji, display, must_have, must_not in _POLY_ANCHOR_GROUPS:
-            best = None
-            for p in parsed_all:
-                q = p["question"].lower()
-                # Phải có ít nhất 1 keyword
-                if not any(kw in q for kw in must_have):
-                    continue
-                # Không được chứa keyword loại trừ
-                if any(kw in q for kw in must_not):
-                    continue
-                # Bỏ qua market đã resolve (YES=0% hoặc 100%)
-                if p["yes"] in (0, 100):
-                    continue
-                best = p
-                break   # parsed_all đã sort theo volumeNum giảm dần
-            if best:
-                result["anchors"].append({**best, "display": display, "emoji": emoji})
-
-        # ── Hot: top-5 theo volume 24h (đã loại junk) ────────────────────────
-        sorted_by_24h = sorted(parsed_all, key=lambda x: -x["vol24"])
-        result["hot"] = sorted_by_24h[:5]
-    except Exception as e:
-        print(f"  ⚠️  Polymarket fetch lỗi: {e}")
-    return result
-
-
-_POLY_CHANGE_THRESHOLD = 3   # hiển thị anchor nếu YES% thay đổi >= 3% so với lần trước
-
-
-def build_polymarket_section(data: dict, prev_anchors: dict) -> tuple[str, dict]:
-    """Tạo chuỗi hiển thị Polymarket + dict anchor mới để lưu vào sent.
-
-    prev_anchors: {display_name: yes_pct} đọc từ sent_urls.json
-    Trả về: (section_string, updated_prev_anchors)
-    """
-    # ── Lọc anchor: chỉ show nếu thay đổi >= threshold hoặc chưa từng ghi nhận ──
-    changed: list[dict] = []
-    new_prev = dict(prev_anchors)   # copy để cập nhật
-    for a in data.get("anchors", []):
-        key  = a["display"]
-        prev = prev_anchors.get(key)  # None nếu lần đầu
-        diff = abs(a["yes"] - prev) if prev is not None else _POLY_CHANGE_THRESHOLD
-        if diff >= _POLY_CHANGE_THRESHOLD:
-            changed.append({**a, "_diff": diff, "_prev": prev})
-        new_prev[key] = a["yes"]   # luôn cập nhật giá trị mới nhất
-
-    hot = data.get("hot", [])
-
-    if not changed and not hot:
-        return "", new_prev
-
-    lines = [
-        "\n\n🎯 **POLYMARKET — THỊ TRƯỜNG DỰ BÁO TOÀN CẦU**",
-        "_(Xác suất từ hàng triệu USD đặt cược thực tế)_",
-    ]
-
-    # ── Anchor block (chỉ khi có thay đổi) ───────────────────────────────────
-    if changed:
-        lines.append("\n**📊 Chỉ số biến động hôm nay:**\n")
-        for a in changed:
-            bar    = _poly_bar(a["yes"] / 100)
-            vol_m  = a["vol"] / 1_000_000 if a["vol"] else 0
-            prev   = a["_prev"]
-            diff   = a["_diff"]
-            if prev is None:
-                trend = ""
-            elif a["yes"] > prev:
-                trend = f" _(+{diff}%)_"
-            else:
-                trend = f" _(-{diff}%)_"
-            # Hiển thị tên nhóm + câu hỏi thực tế (truncate 70 ký tự)
-            q_short = a["question"][:70] + ("…" if len(a["question"]) > 70 else "")
-            lines.append(
-                f"• {a['emoji']} **{a['display']}**{trend}: _{q_short}_\n"
-                f"  YES **{a['yes']}%** {bar} NO {a['no']}%  _(tổng vol: ${vol_m:.1f}M)_"
-            )
-
-    # ── Hot markets (luôn hiển thị) ───────────────────────────────────────────
-    if hot:
-        lines.append("\n**🔥 Đang hot 24h gần nhất:**\n")
-        for i, m in enumerate(hot, 1):
-            vol_m = m["vol"] / 1_000_000 if m["vol"] else 0   # đổi sang tổng vol
-            q = m["question"]
-            if len(q) > 80:
-                q = q[:77] + "..."
-            lines.append(
-                f"{i}. {q}\n"
-                f"   YES **{m['yes']}%** / NO {m['no']}%  _(tổng vol: ${vol_m:.1f}M)_"
-            )
-
-    lines.append("\n_Nguồn: polymarket.com_")
-    return "\n".join(lines), new_prev
 
 
 # ─── Markdown → HTML (dùng cho email) ───────────────────────────────────────
@@ -1321,51 +1141,26 @@ def main():
         ps_top = []
         print(f"  ⚠️  Project Syndicate lỗi: {e}")
 
-    # Polymarket — ghép vào cuối digest
-    print("  Đang lấy dữ liệu Polymarket...")
-    try:
-        # Đọc anchor YES% từ lần chạy trước (lưu trong sent_urls.json)
-        prev_anchors = {
-            k[len("_poly_"):]: v
-            for k, v in sent.items()
-            if k.startswith("_poly_")
-        }
-        poly_data    = fetch_polymarket()
-        poly_section, new_anchors = build_polymarket_section(poly_data, prev_anchors)
-        if poly_section:
-            digest += poly_section
-            n_changed = sum(1 for a in poly_data["anchors"]
-                            if abs(a["yes"] - prev_anchors.get(a["display"], -99)) >= _POLY_CHANGE_THRESHOLD)
-            print(f"  Polymarket: {n_changed} anchor thay đổi, {len(poly_data['hot'])} hot")
-        else:
-            print("  Polymarket: không có dữ liệu / anchor chưa thay đổi (bỏ qua)")
-        # Lưu giá trị anchor mới nhất vào sent để so sánh lần sau
-        for display, yes_pct in new_anchors.items():
-            sent[f"_poly_{display}"] = yes_pct
-    except Exception as e:
-        print(f"  ⚠️  Polymarket lỗi: {e}")
-
-    # Góc nhìn 48h — chỉ gửi mỗi 2 ngày để đủ mật độ tin cho insight xuyên bài
+    # Góc nhìn 24h — chỉ xuất hiện trong bản tin sáng 6-7h giờ Việt Nam
     if should_send_insight(sent):
-        print("  Đang tạo Góc nhìn 48h...")
+        print("  Đang tạo Góc nhìn 24h...")
         try:
             insight_articles = collect_recent_articles_for_insight(
                 sent,
                 top + refs + bloomberg_top + ps_top,
             )
-            print(f"    → {len(insight_articles)} bài cho insight 48h")
+            print(f"    → {len(insight_articles)} bài cho insight 24h")
             insight_section = build_insight_section(insight_articles)
             if insight_section:
                 digest += insight_section
                 sent[INSIGHT_KEY] = time.time()
-                print("  Góc nhìn 48h: đã thêm vào email")
+                print("  Góc nhìn 24h: đã thêm vào email")
             else:
-                print("  Góc nhìn 48h: chưa đủ dữ liệu để tạo")
+                print("  Góc nhìn 24h: chưa đủ dữ liệu để tạo")
         except Exception as e:
-            print(f"  ⚠️  Góc nhìn 48h lỗi: {e}")
+            print(f"  ⚠️  Góc nhìn 24h lỗi: {e}")
     else:
-        next_hours = max(0, INSIGHT_INTERVAL_HOURS - (time.time() - sent.get(INSIGHT_KEY, 0)) / 3600)
-        print(f"  Góc nhìn 48h: bỏ qua, còn khoảng {next_hours:.1f}h tới lần tiếp theo")
+        print("  Góc nhìn 24h: bỏ qua vì ngoài khung sáng hoặc hôm nay đã gửi")
 
     # Gửi Email
     try:
