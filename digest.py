@@ -701,6 +701,125 @@ def build_fallback_digest(articles: list[dict], score_label: int) -> str:
     return "\n".join(lines).strip()
 
 
+INSIGHT_KEY = "_last_insight_sent_at_"
+INSIGHT_INTERVAL_HOURS = 48
+INSIGHT_LOOKBACK_HOURS = 48
+INSIGHT_MAX_ARTICLES = 35
+
+
+def should_send_insight(sent: dict) -> bool:
+    last = sent.get(INSIGHT_KEY)
+    if not isinstance(last, (int, float)):
+        return True
+    return time.time() - last >= INSIGHT_INTERVAL_HOURS * 3600
+
+
+def collect_recent_articles_for_insight(sent: dict, current_articles: list[dict]) -> list[dict]:
+    cutoff = time.time() - INSIGHT_LOOKBACK_HOURS * 3600
+    articles: list[dict] = []
+    seen: set[str] = set()
+
+    for art in current_articles:
+        url = art.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        articles.append(art)
+
+    recent_urls = [
+        (ts, url)
+        for url, ts in sent.items()
+        if not url.startswith("_") and isinstance(ts, (int, float)) and ts >= cutoff and url not in seen
+    ]
+    recent_urls.sort(reverse=True)
+
+    for _, url in recent_urls:
+        if len(articles) >= INSIGHT_MAX_ARTICLES:
+            break
+        html = fetch(url)
+        if not html:
+            continue
+        art = parse(url, html)
+        if not art.get("title"):
+            continue
+        source = re.sub(r"^https?://(?:www\.)?", "", url).split("/")[0]
+        art["source"] = source
+        articles.append(art)
+        seen.add(url)
+    return articles[:INSIGHT_MAX_ARTICLES]
+
+
+def build_insight_section(articles: list[dict]) -> str:
+    if len(articles) < 8:
+        return ""
+
+    url_map = {i: a["url"] for i, a in enumerate(articles, 1)}
+    article_lines = []
+    for i, a in enumerate(articles, 1):
+        text = " ".join((a.get("content_first_500") or a.get("description") or "").split())[:700]
+        article_lines.append(
+            f"[{i}] {a.get('title', '').strip()}\n"
+            f"Nguồn: {a.get('source', '')}\n"
+            f"Tóm lược: {a.get('description', '').strip()}\n"
+            f"Nội dung đầu: {text}"
+        )
+
+    prompt = f"""Bạn là người viết mục insight xuyên tin cho một bản tin kinh tế/chính trị/xã hội.
+Dưới đây là {len(articles)} bài đã xuất hiện trong 48 giờ gần nhất:
+
+{chr(10).join(article_lines)}
+
+Nhiệm vụ: tìm các pattern sâu nối nhiều bài lại với nhau, viết ngắn gọn, trực diện, giống phong cách:
+"Insight thú vị nhất: các tin không rời rạc như ..., mà đang cùng kể một câu chuyện: ..."
+
+QUY TẮC BẮT BUỘC:
+1. Không tóm tắt từng bài riêng lẻ.
+2. Mỗi insight phải nối ít nhất 2 bài.
+3. Viết 1 luận điểm lớn mở đầu, sau đó 4 insight ngắn.
+4. Mỗi insight gồm: tiêu đề ngắn, 1 đoạn giải thích 2-3 câu, rồi dòng "Insight: ..." thật sắc.
+5. Không khuyến nghị mua/bán cổ phiếu.
+6. Không dùng ngôn ngữ chung chung như "cần theo dõi sát".
+7. Khi dẫn nguồn, chỉ dùng marker {{{{LINK_N}}}} tương ứng số bài trong danh sách. Không tự viết URL.
+
+FORMAT OUTPUT:
+
+🧭 **GÓC NHÌN 48H**
+
+Insight thú vị nhất: [1-2 câu luận điểm lớn].
+
+**[Tiêu đề insight 1]**
+[2-3 câu nối các bài.]
+Insight: [1 câu chốt mới mẻ].
+Nguồn: {{{{LINK_1}}}}, {{{{LINK_2}}}}
+
+**[Tiêu đề insight 2]**
+...
+"""
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    payload = {"contents": [{"parts": [{"text": prompt}]}],
+               "generationConfig": {"temperature": 0.35, "maxOutputTokens": 1800}}
+
+    for attempt in range(3):
+        _gemini_wait()
+        r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=90)
+        if r.status_code in (429, 500, 502, 503, 504):
+            wait = 30 * (attempt + 1)
+            print(f"  insight HTTP {r.status_code} — chờ {wait}s (lần {attempt+1}/3)...")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        break
+    else:
+        raise RuntimeError(f"insight: Gemini vẫn lỗi HTTP {r.status_code} sau 3 lần thử")
+
+    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    for i, article_url in url_map.items():
+        text = text.replace(f"{{{{LINK_{i}}}}}", f"[nguồn {i}]({article_url})")
+    text = re.sub(r"\{\{LINK_\d+\}\}", "", text)
+    return "\n\n" + text.strip()
+
+
 # ─── Polymarket ───────────────────────────────────────────────────────────────
 # Nhóm anchor: (emoji, tên nhóm VN, danh sách keyword tìm trong question tiếng Anh)
 # Mỗi nhóm: keyword phải có MẶT, không_có danh sách keyword bị loại trừ
@@ -1136,6 +1255,7 @@ def main():
 
     # Bloomberg Highlights — score bằng title + description theo tiêu chí góc nhìn/độ sâu
     print("  Đang lấy Bloomberg highlights...")
+    bloomberg_top = []
     try:
         bloomberg_arts = collect_bloomberg()
         print(f"    → {len(bloomberg_arts)} bài từ Bloomberg RSS (markets/economics/politics/opinion)")
@@ -1171,6 +1291,7 @@ def main():
 
     # Project Syndicate — opinion từ economists/thought leaders
     print("  Đang lấy Project Syndicate...")
+    ps_top = []
     try:
         ps_arts = collect_project_syndicate()
         print(f"    → {len(ps_arts)} bài từ Project Syndicate homepage (editorial picks)")
@@ -1223,6 +1344,28 @@ def main():
             sent[f"_poly_{display}"] = yes_pct
     except Exception as e:
         print(f"  ⚠️  Polymarket lỗi: {e}")
+
+    # Góc nhìn 48h — chỉ gửi mỗi 2 ngày để đủ mật độ tin cho insight xuyên bài
+    if should_send_insight(sent):
+        print("  Đang tạo Góc nhìn 48h...")
+        try:
+            insight_articles = collect_recent_articles_for_insight(
+                sent,
+                top + refs + bloomberg_top + ps_top,
+            )
+            print(f"    → {len(insight_articles)} bài cho insight 48h")
+            insight_section = build_insight_section(insight_articles)
+            if insight_section:
+                digest += insight_section
+                sent[INSIGHT_KEY] = time.time()
+                print("  Góc nhìn 48h: đã thêm vào email")
+            else:
+                print("  Góc nhìn 48h: chưa đủ dữ liệu để tạo")
+        except Exception as e:
+            print(f"  ⚠️  Góc nhìn 48h lỗi: {e}")
+    else:
+        next_hours = max(0, INSIGHT_INTERVAL_HOURS - (time.time() - sent.get(INSIGHT_KEY, 0)) / 3600)
+        print(f"  Góc nhìn 48h: bỏ qua, còn khoảng {next_hours:.1f}h tới lần tiếp theo")
 
     # Gửi Email
     try:
