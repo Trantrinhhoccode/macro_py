@@ -704,6 +704,7 @@ def build_fallback_digest(articles: list[dict], score_label: int) -> str:
 INSIGHT_KEY = "_last_insight_sent_at_"
 INSIGHT_LOOKBACK_HOURS = 24
 INSIGHT_MAX_ARTICLES = 60
+INSIGHT_ARTICLE_CHARS = 4000
 INSIGHT_MORNING_START_HOUR = 6
 INSIGHT_MORNING_END_HOUR = 8
 
@@ -762,7 +763,7 @@ def build_insight_section(articles: list[dict]) -> str:
     url_map = {i: a["url"] for i, a in enumerate(articles, 1)}
     article_lines = []
     for i, a in enumerate(articles, 1):
-        text = " ".join((a.get("content_first_500") or a.get("description") or "").split())[:700]
+        text = " ".join((a.get("content_first_500") or a.get("description") or "").split())[:INSIGHT_ARTICLE_CHARS]
         article_lines.append(
             f"[{i}] {a.get('title', '').strip()}\n"
             f"Nguồn: {a.get('source', '')}\n"
