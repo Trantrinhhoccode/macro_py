@@ -90,7 +90,9 @@ class _Parser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.in_h1 = self.in_p = self.in_title = False
-        self.title = ""
+        self.h1_title = ""
+        self.doc_title = ""
+        self.og_title = ""
         self.content: list[str] = []
         self.description = ""
         self.pub_date = ""     # article:published_time nếu có
@@ -106,6 +108,8 @@ class _Parser(HTMLParser):
             self.in_p = True
         elif tag == "meta":
             prop = d.get("property", "") or d.get("name", "")
+            if prop == "og:title" and not self.og_title:
+                self.og_title = d.get("content", "")
             if prop in ("og:description", "description") and not self.description:
                 self.description = d.get("content", "")
             # Lấy ngày đăng từ OpenGraph / standard meta
@@ -123,8 +127,8 @@ class _Parser(HTMLParser):
     def handle_data(self, data):
         d = data.strip()
         if not d: return
-        if self.in_h1 and not self.title:    self.title = d
-        elif self.in_title and not self.title: self.title = d
+        if self.in_h1 and not self.h1_title:    self.h1_title = d
+        elif self.in_title and not self.doc_title: self.doc_title = d
         elif self.in_p: self.content.append(d)
 
 
@@ -141,9 +145,13 @@ def parse(url: str, html: str) -> dict:
         if ld:
             pub_date = ld.group(1)
 
+    title = p.h1_title or p.og_title or p.doc_title or ""
+    title = re.sub(r"\s[-|]\s*(VnEconomy|CafeF|Báo Đầu Tư|Nhịp Cầu Đầu Tư|The Saigon Times)\s*$",
+                   "", title, flags=re.I).strip()
+
     return {
         "url": url,
-        "title": p.title or "",
+        "title": title,
         "description": p.description or "",
         "word_count": len(body.split()),
         "content_first_500": body[:5000],
@@ -158,26 +166,39 @@ def parse(url: str, html: str) -> dict:
 def collect_vneconomy() -> list[str]:
     html = fetch("https://vneconomy.vn/")
     if not html: return []
-    raw: set[str] = set()
-    for u in re.findall(r'href="([^"]*\.htm)"', html):
-        if u.startswith("https://vneconomy.vn"): raw.add(u[len("https://vneconomy.vn"):])
-        elif u.startswith("/"): raw.add(u)
+    raw: list[tuple[str, bool, bool]] = []
+    for m in re.finditer(r'<a\b([^>]*?)href="([^"]*\.htm)"([^>]*)>', html, re.I):
+        u = m.group(2)
+        if u.startswith("https://vneconomy.vn"):
+            u = u[len("https://vneconomy.vn"):]
+        elif not u.startswith("/"):
+            continue
+        attrs = f"{m.group(1)} {m.group(3)}"
+        before = html[max(0, m.start() - 100):m.start()].lower()
+        is_story_context = (
+            bool(re.search(r'class="[^"]*(responsive-image-link|link-layer-imt)', attrs, re.I))
+            or "<h3" in before
+        )
+        raw.append((u, bool(re.search(r"\btitle=", attrs, re.I)), is_story_context))
     SKIP_PRE = ["/automotive/","/event/","/an-pham","/cafe-bds","/dang-cong-san",
                 "/bau-cu","/diem-tin-","/photo","/video","/podcast","/emagazine"]
     SKIP_KW  = ["du-lich","am-thuc","giai-tri","the-thao","sac-dep","thoi-trang",
                 "oto-xe-may","lifestyle","song-khoe","nha-dep","kham-chua-benh"]
     SKIP_SUF = re.compile(r"-(e|s)\d+\.htm$")
     out = []
-    for u in raw:
+    out_seen: set[str] = set()
+    for u, has_title_attr, is_story_context in raw:
+        if u in out_seen:
+            continue
         if any(u.startswith(p) for p in SKIP_PRE): continue
         if any(kw in u for kw in SKIP_KW): continue
         if SKIP_SUF.search(u): continue
-        # Bài báo VnEconomy có dạng /category/slug.htm (≥2 cấp path)
-        # URL 1 cấp (/tag-name.htm) là trang category/tag → loại
-        if u.count("/") < 2: continue
+        # Homepage VnEconomy có nhiều bài dạng /slug.htm; nav/category thường không có title attr.
+        if u.count("/") < 2 and not (has_title_attr and is_story_context): continue
         if len(u.rstrip("/").replace(".htm","").split("/")[-1].split("-")) < 5: continue
         out.append("https://vneconomy.vn" + u)
-    return list(set(out))
+        out_seen.add(u)
+    return out
 
 
 def collect_cafef() -> list[str]:
@@ -443,6 +464,8 @@ def process(src: str, url: str) -> dict | None:
                 html = f'<h1>{title_m.group(1)}</h1>' + html
     art = parse(url, html)
     art["source"] = src
+    if src == "VnEconomy" and url.replace("https://vneconomy.vn", "").count("/") < 2 and not art.get("pub_date"):
+        return None
     if art["word_count"] < 300: return None
     if not art["has_numbers"]: return None
     if not art["title"]: return None
