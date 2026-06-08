@@ -5,6 +5,7 @@ on:
     - cron: '0 23 * * *'  # 06:00 sáng giờ Việt Nam (UTC+7 → UTC 23:00)
     - cron: '0 3 * * *'   # 10:00 sáng giờ Việt Nam (UTC+7 → UTC 03:00)
     - cron: '0 9 * * *'   # 16:00 chiều giờ Việt Nam (UTC+7 → UTC 09:00)
+    - cron: '0 0 * * 0'   # 07:00 sáng Chủ nhật giờ Việt Nam — bản tin CTCK cuối tuần
   workflow_dispatch:        # cho phép chạy thủ công từ GitHub UI
 
 permissions:
@@ -13,7 +14,7 @@ permissions:
 jobs:
   send-digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 55
 
     steps:
       - name: Checkout code

@@ -4,6 +4,7 @@ Crawl tin → Gemini score → Tạo bản tin → Gửi Email.
 """
 import difflib
 import gzip
+import io
 import json
 import os
 import re
@@ -26,6 +27,7 @@ from email.mime.text import MIMEText
 from html.parser import HTMLParser
 
 import requests
+from pypdf import PdfReader
 
 # ─── Global Gemini rate limiter (15 RPM = 1 req / 4s) ────────────────────────
 _GEMINI_LOCK      = threading.Lock()
@@ -48,6 +50,18 @@ EMAIL_SENDER   = os.getenv("EMAIL_SENDER", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
 EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "")
 MIN_SCORE    = int(os.getenv("MIN_SCORE", "7"))
+
+WEEKLY_CTCK_KEY = "_last_weekly_ctck_sent_at_"
+WEEKLY_CTCK_CRON = "0 0 * * 0"  # 07:00 Chủ nhật giờ Việt Nam
+WEEKLY_CTCK_LOOKBACK_DAYS = int(os.getenv("WEEKLY_CTCK_LOOKBACK_DAYS", "7"))
+WEEKLY_CTCK_MAX_REPORTS = int(os.getenv("WEEKLY_CTCK_MAX_REPORTS", "30"))
+WEEKLY_CTCK_REPORT_CHARS = int(os.getenv("WEEKLY_CTCK_REPORT_CHARS", "18000"))
+WEEKLY_CTCK_VIETSTOCK_TYPES = {
+    "Vĩ mô - Chiến lược thị trường",
+    "Phân tích Ngành",
+    "Báo cáo Chuyên đề",
+    "Vietstock: Nghiên cứu - Phân tích",
+}
 
 HDR = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -827,6 +841,408 @@ Nguồn: {{{{LINK_1}}}}, {{{{LINK_2}}}}
     return "\n\n" + text.strip()
 
 
+# ─── Weekly CTCK report digest ─────────────────────────────────────────────────
+def _github_event_schedule() -> str:
+    path = os.getenv("GITHUB_EVENT_PATH", "")
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return str(json.load(f).get("schedule") or "")
+    except Exception:
+        return ""
+
+
+def should_run_weekly_ctck(sent: dict) -> bool:
+    if os.getenv("FORCE_WEEKLY_CTCK", "").strip() == "1":
+        return True
+    if _github_event_schedule() != WEEKLY_CTCK_CRON:
+        return False
+
+    last = sent.get(WEEKLY_CTCK_KEY)
+    if not isinstance(last, (int, float)):
+        return True
+    last_dt = datetime.fromtimestamp(last, VN_TZ)
+    return last_dt.date() != now_vn().date()
+
+
+def _parse_vietstock_date(value: str) -> datetime | None:
+    for fmt in ("%d/%m/%Y", "%d/%m/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(value or "", fmt)
+        except Exception:
+            pass
+    return None
+
+
+def _parse_iso_date(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _ctck_report_bucket(report: dict) -> str:
+    typ = report.get("type", "")
+    title = report.get("title", "")
+    if typ == "Phân tích Ngành":
+        return "sector"
+    if typ == "Vĩ mô - Chiến lược thị trường":
+        return "macro"
+    if re.search(r"ngành|bất động sản|nhà ở xã hội|khu công nghiệp|khu chế xuất|dệt may", title, re.I):
+        return "sector"
+    return "macro"
+
+
+def collect_vietstock_ctck_reports(days: int = WEEKLY_CTCK_LOOKBACK_DAYS) -> list[dict]:
+    cutoff = now_vn().replace(tzinfo=None) - timedelta(days=days)
+    selected: list[dict] = []
+    seen: set[str] = set()
+
+    for page in range(1, 9):
+        url = f"https://edocs.vietstock.vn/Home/Report_ReportAll_Paging?xml=&pageIndex={page}&pageSize=100"
+        r = requests.post(
+            url,
+            json={},
+            timeout=25,
+            headers={"User-Agent": HDR["User-Agent"], "Content-Type": "application/json"},
+        )
+        r.raise_for_status()
+        rows = r.json().get("Data", [])
+        if not rows:
+            break
+
+        page_has_recent = False
+        for row in rows:
+            dt = _parse_vietstock_date(row.get("ReleaseDate", ""))
+            if not dt:
+                continue
+            if dt < cutoff:
+                continue
+            page_has_recent = True
+
+            typ = row.get("ReportTypeName", "")
+            title = row.get("Title", "").strip()
+            if typ not in WEEKLY_CTCK_VIETSTOCK_TYPES:
+                continue
+            if typ == "Vietstock: Nghiên cứu - Phân tích" and "technical view" in title.lower():
+                continue
+
+            report_id = str(row.get("ReportID") or row.get("Url") or title)
+            if report_id in seen:
+                continue
+            seen.add(report_id)
+
+            report = {
+                "source": row.get("SourceName", "VietStock"),
+                "origin": "VietStock",
+                "date": row.get("ReleaseDate", ""),
+                "type": typ,
+                "symbol": row.get("StockCode", ""),
+                "title": title,
+                "summary": row.get("Content", "").strip(),
+                "url": row.get("Url", ""),
+            }
+            report["bucket"] = _ctck_report_bucket(report)
+            selected.append(report)
+
+        if not page_has_recent and page > 1:
+            break
+
+    selected.sort(key=lambda x: _parse_vietstock_date(x.get("date", "")) or datetime.min, reverse=True)
+    return selected[:WEEKLY_CTCK_MAX_REPORTS]
+
+
+_CAFEF_FALLBACK_SYMBOLS = [
+    "ACB", "BID", "CTG", "TCB", "VCB", "MBB", "HDB", "STB", "VPB",
+    "HPG", "HSG", "NKG", "GMD", "HAH", "IDC", "KBC", "VGC", "PHR",
+    "MWG", "FRT", "MSN", "PNJ", "DGW", "VHC", "ANV", "QNS", "DGC",
+    "DCM", "DPM", "GAS", "POW", "PLX", "VJC", "FPT", "TNG", "MSH",
+    "VRE", "KDH", "NLG", "DXG", "SSI", "VND", "HCM", "VCI", "BSR",
+    "PVD", "PVS", "HHV", "LCG", "REE", "GEX", "BMP", "NTP", "TLG",
+]
+
+
+def collect_cafef_ctck_fallback(days: int = WEEKLY_CTCK_LOOKBACK_DAYS) -> list[dict]:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    for symbol in _CAFEF_FALLBACK_SYMBOLS:
+        try:
+            r = requests.get(
+                "https://apiweb.cafef.vn/api/v1/StockPrice/AnalysisReport",
+                params={"symbol": symbol},
+                timeout=15,
+                headers={"User-Agent": HDR["User-Agent"]},
+            )
+            if r.status_code != 200:
+                continue
+            rows = r.json().get("value") or []
+        except Exception:
+            continue
+
+        for row in rows:
+            dt = _parse_iso_date(row.get("dateDeploy", ""))
+            if not dt or dt < cutoff:
+                continue
+            report_type = row.get("reportType", "")
+            title = row.get("title", "").strip()
+            if "Báo cáo Ngành" not in report_type and not re.search(r"báo cáo ngành", title, re.I):
+                continue
+            key = str(row.get("id") or f"{symbol}:{title}")
+            if key in seen:
+                continue
+            seen.add(key)
+
+            file_name = row.get("fileName") or ""
+            pdf_url = ""
+            if file_name:
+                pdf_url = "https://cafefnew.mediacdn.vn/Images/Uploaded/DuLieuDownload/PhanTichBaoCao/" + file_name
+            report = {
+                "source": row.get("resourceName", "CafeF"),
+                "origin": "CafeF",
+                "date": dt.strftime("%d/%m/%Y"),
+                "type": report_type or "Báo cáo Ngành",
+                "symbol": row.get("symbol", symbol),
+                "title": title,
+                "summary": row.get("body", "").strip(),
+                "url": pdf_url or row.get("resourceLink", ""),
+                "bucket": "sector",
+            }
+            out.append(report)
+
+    out.sort(key=lambda x: _parse_vietstock_date(x.get("date", "")) or datetime.min, reverse=True)
+    return out[:WEEKLY_CTCK_MAX_REPORTS]
+
+
+def extract_pdf_text(url: str) -> str:
+    if not url:
+        return ""
+    candidates = [url]
+    if url.startswith("http://"):
+        candidates.insert(0, "https://" + url[len("http://"):])
+
+    for candidate in candidates:
+        try:
+            r = requests.get(candidate, timeout=45, headers={"User-Agent": HDR["User-Agent"]})
+            if r.status_code >= 400:
+                continue
+            reader = PdfReader(io.BytesIO(r.content))
+            parts = []
+            for page in reader.pages:
+                try:
+                    parts.append(page.extract_text() or "")
+                except Exception:
+                    parts.append("")
+            text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+            return text
+        except Exception:
+            continue
+    return ""
+
+
+def enrich_ctck_reports_with_text(reports: list[dict]) -> list[dict]:
+    enriched: list[dict] = []
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = {ex.submit(extract_pdf_text, r.get("url", "")): r for r in reports}
+        for f in as_completed(futs):
+            report = futs[f]
+            try:
+                text = f.result()
+            except Exception:
+                text = ""
+            report["text"] = text[:WEEKLY_CTCK_REPORT_CHARS] if text else report.get("summary", "")
+            report["text_chars"] = len(text)
+            if report.get("text"):
+                enriched.append(report)
+    enriched.sort(key=lambda x: _parse_vietstock_date(x.get("date", "")) or datetime.min, reverse=True)
+    return enriched
+
+
+def _ctck_report_blocks(reports: list[dict]) -> str:
+    blocks = []
+    for i, r in enumerate(reports, 1):
+        blocks.append(
+            f"--- REPORT {i} ---\n"
+            f"Nguồn: {r.get('source')} ({r.get('origin')})\n"
+            f"Ngày: {r.get('date')}\n"
+            f"Loại: {r.get('type')}\n"
+            f"Tiêu đề: {r.get('title')}\n"
+            f"Tóm tắt metadata: {r.get('summary')}\n"
+            f"Nội dung PDF: {r.get('text', '')}\n"
+        )
+    return "\n".join(blocks)
+
+
+def gemini_text(prompt: str, max_output_tokens: int, label: str, temperature: float = 0.25) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_output_tokens},
+    }
+    for attempt in range(3):
+        _gemini_wait()
+        r = requests.post(url, json=payload, params={"key": GEMINI_KEY}, timeout=180)
+        if r.status_code in (429, 500, 502, 503, 504):
+            wait = 30 * (attempt + 1)
+            print(f"  {label} HTTP {r.status_code} — chờ {wait}s (lần {attempt+1}/3)...")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    raise RuntimeError(f"{label}: Gemini vẫn lỗi HTTP {r.status_code} sau 3 lần thử")
+
+
+def build_ctck_macro_section(reports: list[dict]) -> str:
+    if not reports:
+        return ""
+    prompt = f"""Bạn là chuyên gia chiến lược thị trường chứng khoán Việt Nam.
+Dưới đây là các báo cáo CTCK vĩ mô/chiến lược/chuyên đề trong {WEEKLY_CTCK_LOOKBACK_DAYS} ngày gần nhất.
+
+{_ctck_report_blocks(reports)}
+
+Viết phần **I. THỊ TRƯỜNG - VĨ MÔ** cho bản tin cuối tuần, dài và đủ luận điểm.
+
+YÊU CẦU:
+- Không tóm tắt từng báo cáo; hãy tổng hợp thành một mạch logic.
+- Dùng tiếng Việt, giọng phân tích trực diện cho nhà đầu tư cá nhân.
+- BOLD mọi số liệu quan trọng bằng **...**.
+- Không khuyến nghị mua/bán cụ thể.
+- Viết 6 mục, mỗi mục 2-4 đoạn ngắn:
+  1. Thị trường: định giá, VN-Index, thanh khoản, dòng tiền.
+  2. Tăng trưởng kinh tế: sản xuất, PMI/IIP, FDI, bán lẻ, du lịch.
+  3. Nhập siêu và chuỗi cung ứng: mặt tích cực và rủi ro.
+  4. Lạm phát - tỷ giá - thanh khoản: CPI, lãi suất, NHNN, tín dụng/huy động.
+  5. Đầu tư công và chính sách: vì sao trở thành trụ đỡ khi tiền tệ bị bó hẹp.
+  6. Khối ngoại, ETF/nâng hạng và rủi ro bên ngoài: dòng tiền ngắn hạn, thuế quan, địa chính trị.
+
+FORMAT:
+
+**I. THỊ TRƯỜNG - VĨ MÔ**
+
+**1. [Tiêu đề sắc gọn]**
+[Nội dung]
+
+..."""
+    return gemini_text(prompt, max_output_tokens=5200, label="ctck_macro", temperature=0.25)
+
+
+def build_ctck_sector_section(reports: list[dict]) -> str:
+    if not reports:
+        return ""
+    prompt = f"""Bạn là chuyên gia phân tích ngành cho nhà đầu tư chứng khoán Việt Nam.
+Dưới đây là các báo cáo ngành/chuyên đề chính sách ngành từ CTCK trong {WEEKLY_CTCK_LOOKBACK_DAYS} ngày gần nhất.
+
+{_ctck_report_blocks(reports)}
+
+Viết phần **II. NGÀNH** cho bản tin cuối tuần.
+
+YÊU CẦU:
+- Chỉ viết các ngành/chủ đề thực sự xuất hiện trong báo cáo.
+- Mỗi ngành phải đủ dày, không viết 1-2 câu hời hợt.
+- Mỗi ngành gồm: quan điểm ngành, catalyst, rủi ro, rồi cổ phiếu được CTCK nhắc tới.
+- Với mỗi cổ phiếu: viết 2-4 câu luận điểm đầu tư từ báo cáo; không tự bịa nếu báo cáo không nhắc.
+- Không viết mục kết luận đầu tư cuối cùng.
+- BOLD mọi số liệu quan trọng bằng **...**.
+
+FORMAT:
+
+**II. NGÀNH**
+
+**1. [Tên ngành/chủ đề]**
+
+Quan điểm ngành: [2-3 đoạn]
+
+Catalyst: [1 đoạn]
+
+Rủi ro: [1 đoạn]
+
+Các cổ phiếu được CTCK nhắc tới:
+- **MÃ:** [2-4 câu luận điểm]
+- **MÃ:** [...]
+
+..."""
+    return gemini_text(prompt, max_output_tokens=5600, label="ctck_sector", temperature=0.25)
+
+
+def build_weekly_ctck_digest(reports: list[dict]) -> str:
+    macro_reports = [r for r in reports if r.get("bucket") == "macro"]
+    sector_reports = [r for r in reports if r.get("bucket") == "sector"]
+    print(f"  CTCK: {len(macro_reports)} báo cáo vĩ mô/chuyên đề | {len(sector_reports)} báo cáo ngành/chính sách ngành")
+
+    macro_section = build_ctck_macro_section(macro_reports)
+    sector_section = build_ctck_sector_section(sector_reports)
+
+    today = now_vn().strftime("%d/%m/%Y")
+    source_lines = ["\n\n**BÁO CÁO ĐÃ ĐỌC**"]
+    for i, r in enumerate(reports, 1):
+        source_lines.append(
+            f"{i}. [{r.get('title')}]({r.get('url')}) — {r.get('source')} · {r.get('date')} · {r.get('type')}"
+        )
+
+    prompt = f"""Bạn là biên tập viên bản tin đầu tư cuối tuần.
+Hãy ghép 2 phần dưới đây thành một bản tin email sạch, mạch lạc, không trùng lặp và không thêm mục kết luận cuối.
+
+PHẦN VĨ MÔ:
+{macro_section}
+
+PHẦN NGÀNH:
+{sector_section}
+
+QUY TẮC:
+- Giữ hai mục lớn: **I. THỊ TRƯỜNG - VĨ MÔ** và **II. NGÀNH**.
+- Phần vĩ mô phải đầy đủ, dài hơn digest hằng ngày.
+- Phần ngành phải liệt kê cổ phiếu theo từng ngành/chủ đề.
+- Không viết mục "Kết luận đầu tư" cuối cùng.
+- Không khuyến nghị mua/bán trực tiếp.
+- BOLD số liệu quan trọng bằng **...**.
+- Mở đầu bằng đúng tiêu đề:
+📊 **BẢN TIN CTCK CUỐI TUẦN — {today}**
+"""
+    final = gemini_text(prompt, max_output_tokens=7600, label="ctck_final", temperature=0.2)
+    return final.strip() + "\n".join(source_lines)
+
+
+def run_weekly_ctck_digest(sent: dict, thread_id: str) -> None:
+    t0 = time.time()
+    print(f"[{now_vn().strftime('%H:%M:%S')}] Bắt đầu pipeline CTCK cuối tuần...")
+
+    try:
+        reports = collect_vietstock_ctck_reports()
+        print(f"  VietStock: {len(reports)} báo cáo vĩ mô/ngành/chuyên đề")
+    except Exception as e:
+        print(f"  ⚠️  VietStock lỗi: {e}")
+        reports = []
+
+    if not reports:
+        reports = collect_cafef_ctck_fallback()
+        print(f"  CafeF fallback: {len(reports)} báo cáo ngành")
+
+    if not reports:
+        print("  ⚠️ Không có báo cáo CTCK phù hợp trong tuần.")
+        return
+
+    print("  Đang đọc nội dung PDF báo cáo...")
+    reports = enrich_ctck_reports_with_text(reports)
+    if not reports:
+        print("  ⚠️ Không đọc được nội dung PDF báo cáo.")
+        return
+    print(f"  Đọc được {len(reports)} báo cáo ({sum(r.get('text_chars', 0) for r in reports)} ký tự PDF)")
+
+    digest = build_weekly_ctck_digest(reports)
+    send_email(digest, thread_id)
+
+    sent[WEEKLY_CTCK_KEY] = time.time()
+    save_sent(sent)
+    print(f"  ✅ Gửi xong CTCK cuối tuần! Tổng: {time.time()-t0:.1f}s")
+
+
 # ─── Markdown → HTML (dùng cho email) ───────────────────────────────────────
 def md_to_html(text: str) -> str:
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -952,6 +1368,11 @@ def main():
     print(f"[{now_vn().strftime('%H:%M:%S')}] Bắt đầu pipeline...")
     sent = load_sent()
     thread_id = get_or_create_thread_id(sent)  # lấy/tạo thread ID cho email
+
+    if should_run_weekly_ctck(sent):
+        run_weekly_ctck_digest(sent, thread_id)
+        return
+
     url_count = sum(1 for k in sent if not k.startswith("_"))
     print(f"  Đã có {url_count} URL trong lịch sử (3 ngày gần nhất)")
 
