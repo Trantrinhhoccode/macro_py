@@ -45,7 +45,7 @@ def _gemini_wait():
 
 # ─── Config (đọc từ env / GitHub Secrets) ────────────────────────────────────
 GEMINI_KEY   = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 EMAIL_SENDER   = os.getenv("EMAIL_SENDER", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
 EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT", "")
@@ -160,8 +160,13 @@ def parse(url: str, html: str) -> dict:
             pub_date = ld.group(1)
 
     title = p.h1_title or p.og_title or p.doc_title or ""
-    title = re.sub(r"\s[-|]\s*(VnEconomy|CafeF|Báo Đầu Tư|Nhịp Cầu Đầu Tư|The Saigon Times)\s*$",
-                   "", title, flags=re.I).strip()
+    title = re.sub(
+        r"\s[-|]\s*(VnEconomy|CafeF|Báo Đầu Tư|Nhịp Cầu Đầu Tư|The Saigon Times|CNBC|Yahoo Finance|BBC News|BBC)\s*$",
+        "", title, flags=re.I
+    ).strip()
+
+    # Loại bỏ thông báo boilerplate của Yahoo Finance nếu xuất hiện ở đầu body
+    body = re.sub(r"^(?:Oops,\s+something\s+went\s+wrong\s*)+", "", body, flags=re.I).strip()
 
     return {
         "url": url,
@@ -171,7 +176,8 @@ def parse(url: str, html: str) -> dict:
         "content_first_500": body[:5000],
         "pub_date": pub_date,
         "has_numbers": bool(re.search(
-            r"\d+([.,]\d+)?\s*(%|tỷ|triệu|nghìn|USD|VNĐ|VND|đồng|điểm|tấn|km)", body, re.I
+            r"(\$|€|£)\s*\d|\d+([.,]\d+)?\s*(%|tỷ|triệu|nghìn|USD|VNĐ|VND|đồng|điểm|tấn|km|billion|million|trillion|thousand|percent|bps|points?|barrels?)",
+            body, re.I
         )),
     }
 
@@ -297,6 +303,126 @@ def collect_bbw() -> list[str]:
             out.append(full)
             seen.add(full)
     return out
+
+
+# ─── International full-text collectors (CNBC, Yahoo Finance, BBC Business) ───
+_CNBC_RSS_FEEDS = [
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",  # Economy
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",  # Finance
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362", # World
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114", # Top News
+]
+
+
+def collect_cnbc() -> list[str]:
+    """Lấy bài viết full-text từ official RSS feeds của CNBC (Economy, Finance, World, Top News)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    skip = ("/video/", "/pro/", "/select/", "/make-it/", "/live-updates/")
+    for feed_url in _CNBC_RSS_FEEDS:
+        xml = fetch(feed_url)
+        if not xml:
+            continue
+        for u in re.findall(r"<link>(https://www\.cnbc\.com/20\d{2}/[^<]+\.html)</link>", xml):
+            u = u.strip()
+            if any(s in u for s in skip):
+                continue
+            if u not in seen:
+                out.append(u)
+                seen.add(u)
+    return out
+
+
+def collect_yahoo_finance() -> list[str]:
+    """Lấy bài viết full-text từ Yahoo Finance (bao gồm nhiều bài Reuters/AP/Bloomberg syndication)."""
+    pages = [
+        "https://finance.yahoo.com/economy/",
+        "https://finance.yahoo.com/topic/latest-news/",
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    skip = (
+        "/personal-finance/", "sign-up-for-yahoo", "/video/", "/live/",
+        "/calendar/", "/research/", "/compare/", "best-cd-rates",
+        "best-balance-transfer", "best-online-banks", "best-free-checking",
+    )
+    for page_url in pages:
+        html = fetch(page_url)
+        if not html:
+            continue
+        for u in re.findall(r'href="(https://finance\.yahoo\.com/[^"]+\.html)"', html):
+            if any(s in u for s in skip):
+                continue
+            # Chỉ giữ chuyên mục kinh tế / thị trường / năng lượng / tin tức
+            if not any(seg in u for seg in ("/economy/", "/markets/", "/news/", "/energy/")):
+                continue
+            if u not in seen:
+                out.append(u)
+                seen.add(u)
+    return out
+
+
+def collect_bbc_business() -> list[str]:
+    """Lấy bài viết full-text từ official RSS của BBC Business."""
+    xml = fetch("https://feeds.bbci.co.uk/news/business/rss.xml")
+    if not xml:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for u in re.findall(r"<link>(https://www\.bbc\.(?:co\.uk|com)/news/articles/[^<]+)</link>", xml):
+        clean = u.split("?")[0].strip()
+        if any(s in clean for s in ("/videos/", "/live/")):
+            continue
+        if clean not in seen:
+            out.append(clean)
+            seen.add(clean)
+    return out
+
+
+# ─── Investing.com via official RSS (headline-only vì trang chi tiết chặn HTTP 403) ───
+_INVESTING_RSS_FEEDS = [
+    "https://www.investing.com/rss/news_14.rss",  # Economy
+    "https://www.investing.com/rss/news_25.rss",  # Stock Market
+]
+_INVESTING_PER_FEED = 5
+_INVESTING_MAX_AGE_HOURS = 24
+
+
+def collect_investing_rss() -> list[dict]:
+    """Lấy headlines kinh tế/thị trường từ Investing.com official RSS feeds."""
+    seen: set[str] = set()
+    articles: list[dict] = []
+    for feed_url in _INVESTING_RSS_FEEDS:
+        xml = fetch(feed_url)
+        if not xml:
+            continue
+        feed_count = 0
+        for item in re.findall(r"<item>(.*?)</item>", xml, re.DOTALL):
+            if feed_count >= _INVESTING_PER_FEED:
+                break
+            tm = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>", item) or \
+                 re.search(r"<title>(.*?)</title>", item)
+            lm = re.search(r"<link>(https?://[^<]+)</link>", item)
+            pm = re.search(r"<pubDate>(.*?)</pubDate>", item)
+            if not (tm and lm):
+                continue
+            url = lm.group(1).strip()
+            if url in seen:
+                continue
+            seen.add(url)
+            title = re.sub(r"<!\[CDATA\[|\]\]>", "", tm.group(1)).strip()
+            pub = pm.group(1).strip() if pm else ""
+            if pub:
+                try:
+                    pub_dt = datetime.strptime(pub, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    age_h = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600
+                    if age_h > _INVESTING_MAX_AGE_HOURS:
+                        continue
+                except Exception:
+                    pass
+            articles.append({"title": title, "description": "", "url": url, "pub_date": pub})
+            feed_count += 1
+    return articles
 
 
 # ─── Tier 2: fetch + filter ────────────────────────────────────────────────────
@@ -576,9 +702,17 @@ def fetch_full_text(url: str) -> str:
     if "bbw.vn" in url:
         idx = html.find('id="article-detail"')
         if idx > 0: html = html[idx:]
-    paras = re.findall(r"<p[^>]*>([^<]{40,})</p>", html)
-    text = re.sub(r"\s+", " ", " ".join(paras)).strip()
-    return text[:1500]
+    p = _Parser()
+    try:
+        p.feed(html)
+    except Exception:
+        pass
+    text = re.sub(r"\s+", " ", " ".join(p.content)).strip()
+    text = re.sub(r"^(?:Oops,\s+something\s+went\s+wrong\s*)+", "", text, flags=re.I).strip()
+    if not text:
+        paras = re.findall(r"<p[^>]*>([^<]{40,})</p>", html)
+        text = re.sub(r"\s+", " ", " ".join(paras)).strip()
+    return text[:2000]
 
 
 def build_digest(articles: list[dict]) -> str:
@@ -587,7 +721,7 @@ def build_digest(articles: list[dict]) -> str:
 
     articles_text = ""
     for i, a in enumerate(articles, 1):
-        content = fetch_full_text(a["url"])
+        content = (a.get("content_first_500") or "")[:2000] or fetch_full_text(a["url"])
         articles_text += (
             f"--- BÀI {i} ---\n"
             f"Tiêu đề: {a['title']}\n"
@@ -1376,17 +1510,21 @@ def main():
     url_count = sum(1 for k in sent if not k.startswith("_"))
     print(f"  Đã có {url_count} URL trong lịch sử (3 ngày gần nhất)")
 
-    # Tier 1: Thu thập URL song song
+    # Tier 1: Thu thập URL song song (trong nước + quốc tế full-text)
     collectors = {
-        "VnEconomy": collect_vneconomy,
-        "CafeF":     collect_cafef,
-        "SaigonTimes": collect_sgt,
+        "VnEconomy":    collect_vneconomy,
+        "CafeF":        collect_cafef,
+        "SaigonTimes":  collect_sgt,
         "NhipCauDauTu": collect_ncdt,
-        "BaoDauTu":  collect_bdt,
-        "BBW":       collect_bbw,
+        "BaoDauTu":     collect_bdt,
+        "BBW":          collect_bbw,
+        "CNBC":         collect_cnbc,
+        "YahooFinance": collect_yahoo_finance,
+        "BBCBusiness":  collect_bbc_business,
     }
+    intl_sources = {"CNBC", "YahooFinance", "BBCBusiness"}
     sources: dict[str, list[str]] = {}
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=9) as ex:
         futs = {ex.submit(fn): name for name, fn in collectors.items()}
         for f in as_completed(futs):
             name = futs[f]
@@ -1399,21 +1537,39 @@ def main():
     after_dedup = sum(len(v) for v in sources.values())
     print(f"  Tier1: {total_urls} URLs ({after_dedup} sau khi loại trùng) ({time.time()-t0:.1f}s)")
 
-    # Tier 2: Fetch + filter (tối đa 15 bài/nguồn)
-    tier2: list[dict] = []
+    # Tier 2: Fetch + filter (tối đa 15 bài/nguồn VN, 10 bài/nguồn quốc tế)
+    tier2_by_src: dict[str, list[dict]] = {name: [] for name in collectors}
     with ThreadPoolExecutor(max_workers=12) as ex:
         futs2 = []
         for src, urls in sources.items():
-            for u in urls[:15]:
+            limit = 10 if src in intl_sources else 15
+            for u in urls[:limit]:
                 futs2.append(ex.submit(process, src, u))
         for f in as_completed(futs2):
             try:
                 r = f.result()
-                if r: tier2.append(r)
+                if r:
+                    tier2_by_src.setdefault(r["source"], []).append(r)
             except Exception:
                 pass
-    print(f"  Tier2: {len(tier2)} bài qua filter ({time.time()-t0:.1f}s)")
-    tier2 = tier2[:60]  # cap 60 bài — rate limiter _gemini_wait() giữ đúng 15 RPM
+
+    # Round-robin giữa các nguồn để cả tin VN lẫn quốc tế đều được chấm điểm công bằng
+    tier2: list[dict] = []
+    idx = 0
+    while len(tier2) < 65:
+        added = False
+        for name in collectors:
+            bucket = tier2_by_src.get(name, [])
+            if idx < len(bucket):
+                tier2.append(bucket[idx])
+                added = True
+                if len(tier2) >= 65:
+                    break
+        if not added:
+            break
+        idx += 1
+    intl_t2 = sum(1 for a in tier2 if a["source"] in intl_sources)
+    print(f"  Tier2: {len(tier2)} bài qua filter (VN: {len(tier2)-intl_t2}, Quốc tế: {intl_t2}) ({time.time()-t0:.1f}s)")
 
     if not tier2:
         print("⚠️ Hôm nay không có bài nào qua filter.")
@@ -1453,7 +1609,7 @@ def main():
     final.sort(key=lambda x: -x["score"]["total"])
 
     # Lấy bài đáng đọc (full summary) và bài tham khảo (snippet)
-    top  = [a for a in final if a["score"]["total"] >= MIN_SCORE][:12]
+    top  = [a for a in final if a["score"]["total"] >= MIN_SCORE][:14]
     refs = [a for a in final if a["score"]["total"] == MIN_SCORE - 1][:8]  # điểm 6
     print(f"  Top bài (>={MIN_SCORE} điểm): {len(top)} bài | Tham khảo: {len(refs)} bài")
 
@@ -1563,13 +1719,45 @@ def main():
         ps_top = []
         print(f"  ⚠️  Project Syndicate lỗi: {e}")
 
+    # Investing.com RSS — headlines kinh tế & thị trường (link gốc vì trang chi tiết chặn HTTP 403)
+    print("  Đang lấy Investing.com RSS...")
+    inv_top = []
+    try:
+        inv_arts = [a for a in collect_investing_rss() if a["url"] not in sent]
+        print(f"    → {len(inv_arts)} bài từ Investing.com RSS (economy/stock-market)")
+        inv_scored = []
+        for a in inv_arts:
+            s = score_bloomberg(a)
+            if s and s["total"] >= 6:
+                inv_scored.append({**a, "score": s})
+        inv_scored.sort(key=lambda x: -x["score"]["total"])
+        inv_top = inv_scored[:3]
+        if inv_top:
+            inv_lines = ["\n\n📈 **INVESTING.COM HEADLINES**\n"]
+            for a in inv_top:
+                summary = a["score"].get("summary", "").strip()
+                topic = a["score"].get("topic", "").strip()
+                label = f"Investing.com · {topic}" if topic else "Investing.com"
+                inv_lines.append(
+                    f"• **{a['title']}**  _{label}_\n"
+                    f"  {summary}\n"
+                    f"  [đọc thêm]({a['url']})\n"
+                )
+            digest += "\n".join(inv_lines)
+            print(f"  Investing.com: {len(inv_top)} bài highlights")
+        else:
+            print("  Investing.com: không có bài nào đủ điểm")
+    except Exception as e:
+        inv_top = []
+        print(f"  ⚠️  Investing.com lỗi: {e}")
+
     # Góc nhìn 24h — chỉ xuất hiện trong bản tin sáng 6-7h giờ Việt Nam
     if should_send_insight(sent):
         print("  Đang tạo Góc nhìn 24h...")
         try:
             insight_articles = collect_recent_articles_for_insight(
                 sent,
-                top + refs + bloomberg_top + ps_top,
+                top + refs + bloomberg_top + ps_top + inv_top,
             )
             print(f"    → {len(insight_articles)} bài cho insight 24h")
             insight_section = build_insight_section(insight_articles)
@@ -1591,12 +1779,12 @@ def main():
         print(f"  ❌ Email thất bại: {e}")
         raise
 
-    # Cập nhật danh sách URL đã gửi (cả top lẫn refs)
+    # Cập nhật danh sách URL đã gửi (cả top, refs và Investing.com)
     now = time.time()
-    for a in top + refs:
+    for a in top + refs + inv_top:
         sent[a["url"]] = now
     save_sent(sent)
-    print(f"  💾 Đã lưu {len(top)+len(refs)} URL vào {SENT_FILE} (tổng: {len(sent)} URL)")
+    print(f"  💾 Đã lưu {len(top)+len(refs)+len(inv_top)} URL vào {SENT_FILE} (tổng: {len(sent)} URL)")
     print(f"  ✅ Gửi xong! Tổng: {time.time()-t0:.1f}s")
 
 
